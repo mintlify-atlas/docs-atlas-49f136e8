@@ -1,0 +1,145 @@
+---
+title: "MC Modeler User Preferences & Settings Guide"
+sidebarTitle: "Preferences"
+description: "Full reference for every MC Modeler user preference — language, theme, grid, auto-save, palette mode, and more, with defaults and storage details."
+---
+
+MC Modeler remembers your working style through a set of user preferences that persist across sessions. Every preference is saved automatically when you change it — there is no "Apply" button. In cloud mode the preferences are stored server-side so they follow you to any browser; in local mode they are kept in IndexedDB.
+
+## Where Preferences Are Stored
+
+| Mode | Storage |
+|------|---------|
+| **Cloud mode** (Supabase configured) | Saved to the `profiles` table via `IDiagramRepository.savePreferences()` — synced across devices |
+| **Local mode** (no Supabase) | Saved to the browser's IndexedDB (`localStorage` fallback) — browser-specific |
+
+Preferences are loaded once at startup by `usePreferencesStore` and hydrated into the Zustand store. Any setter (`setTheme`, `setLanguage`, …) immediately persists the change so it survives a page reload.
+
+## Preference Reference
+
+The `UserPreferences` interface (defined in `src/domain/types.ts`) contains the following fields. Defaults come directly from `src/store/preferencesStore.ts`.
+
+### Language
+
+| Property | Type | Default |
+|----------|------|---------|
+| `language` | `'es' \| 'en'` | `'es'` |
+
+Controls the UI language. `'es'` renders the interface in Spanish; `'en'` in English. The value is also passed to `i18n.changeLanguage()` so all translations update immediately without a page reload.
+
+Change it via **Settings → Language** or the language toggle in the toolbar.
+
+---
+
+### Theme
+
+| Property | Type | Default |
+|----------|------|---------|
+| `theme` | `'light' \| 'dark' \| 'system'` | `'light'` |
+
+Sets the color scheme. `'system'` follows your operating-system preference (`prefers-color-scheme` media query) and updates automatically if you switch OS theme while the app is open. The selected theme is applied by writing `data-theme="light"` or `data-theme="dark"` to the `<html>` element.
+
+---
+
+### Grid
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `gridEnabled` | `boolean` | `true` | Toggles the dot-grid overlay on the canvas |
+| `gridSize` | `5 \| 10 \| 20` | `10` | Grid spacing in pixels |
+| `snapToGrid` | `boolean` | `true` | Snaps element positions to the nearest grid point when dragging |
+
+`gridEnabled` and `snapToGrid` are independent — you can disable the visual grid while keeping snapping active, or show the grid without enforcing snapping. `gridSize` accepts only the three discrete values `5`, `10`, and `20`; the UI prevents entering arbitrary numbers.
+
+---
+
+### Auto-Save
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `autoSaveInterval` | `number` | `30` | Seconds between automatic saves |
+
+The auto-save timer resets whenever you manually save with <kbd>Ctrl</kbd>+<kbd>S</kbd>. Set a lower value (e.g. `10`) if you work in unstable network conditions. The status bar shows the time elapsed since the last save.
+
+---
+
+### Last Opened Diagram
+
+| Property | Type | Default |
+|----------|------|---------|
+| `lastOpenedDiagramId` | `string \| null` | `null` |
+
+Stores the `id` of the most recently opened diagram. On the next visit MC Modeler attempts to reopen it directly, bypassing the diagram list. Set to `null` to always start on the diagram list.
+
+---
+
+### Palette Mode
+
+| Property | Type | Default |
+|----------|------|---------|
+| `paletteMode` | `'grid' \| 'dropdown' \| 'bizagi'` | `'grid'` |
+
+Controls how BPMN elements are presented in the element palette.
+
+| Value | Behavior |
+|-------|----------|
+| `'grid'` | All elements shown in a flat grid — useful for learners who want to see every element at once |
+| `'dropdown'` | Elements grouped in collapsible dropdown sections |
+| `'bizagi'` | Variants of the same element are stacked under a single button; click-and-hold to pick a variant |
+
+<Tip>
+  **`bizagi` mode is the most efficient choice for experienced BPMN modelers.** Inspired by Bizagi Modeler, it keeps the palette compact by grouping element variants (e.g. all start event types) under one button. Once you know the element types by heart, it eliminates visual noise and lets you model faster.
+</Tip>
+
+Change it via **View → Element palette** in the menu bar (options: **Main**, **Grouped**, **Bizagi**).
+
+---
+
+### Comments
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `showComments` | `boolean` | `true` | Shows comment thread indicators as badges on canvas elements |
+
+When `false`, comment badges are hidden from the canvas but threads still exist and remain accessible from the right panel. Toggle it via **View → Comments** in the menu bar or the toolbar button.
+
+---
+
+### Diagram Sort
+
+| Property | Type | Default |
+|----------|------|---------|
+| `diagramSort` | `DiagramSort` | `{ key: 'updated', dir: 'desc' }` |
+
+Sets the default sort order for the diagram list. `DiagramSort` is defined as:
+
+```ts
+interface DiagramSort {
+  key: 'updated' | 'created' | 'name' | 'elements'
+  dir: 'asc' | 'desc'
+}
+```
+
+| Key | Sorts by |
+|-----|---------|
+| `'updated'` | Last modified date |
+| `'created'` | Creation date |
+| `'name'` | Diagram name (alphabetical) |
+| `'elements'` | Number of BPMN elements in the diagram |
+
+The sort preference is saved each time you change the sort order in the diagram list. Clicking the active sort option in the list header reverses the direction (`asc` ↔ `desc`).
+
+## Summary Table
+
+| Preference | Type | Default | Description |
+|------------|------|---------|-------------|
+| `language` | `'es' \| 'en'` | `'es'` | Interface language |
+| `theme` | `'light' \| 'dark' \| 'system'` | `'light'` | Color theme |
+| `gridEnabled` | `boolean` | `true` | Show dot grid on canvas |
+| `gridSize` | `5 \| 10 \| 20` | `10` | Grid spacing in pixels |
+| `snapToGrid` | `boolean` | `true` | Snap elements to grid when moved |
+| `autoSaveInterval` | `number` | `30` | Auto-save interval in seconds |
+| `lastOpenedDiagramId` | `string \| null` | `null` | Reopens last diagram on next visit |
+| `paletteMode` | `'grid' \| 'dropdown' \| 'bizagi'` | `'grid'` | Palette display style |
+| `showComments` | `boolean` | `true` | Show comment indicators on canvas |
+| `diagramSort` | `DiagramSort` | `{ key: 'updated', dir: 'desc' }` | Default sort for diagram list |

@@ -1,0 +1,199 @@
+---
+title: "All 35 BPMN 2.0 Elements in MC Modeler's Palette"
+sidebarTitle: "BPMN Elements"
+description: "Complete reference for all 35 BPMN elements across Events, Activities, Gateways, Connections, and Containers — with types, palette modes, and BPMN 2.0 rules."
+---
+
+MC Modeler ships with **35 BPMN 2.0 elements** drawn directly from `src/domain/bpmnElements.ts`. They span five categories — Events, Activities, Gateways, Connections, and Containers — and are organized in the left-side palette in whichever display mode you prefer. Every element maps to an official OMG BPMN 2.0 type, ensuring that diagrams you export open correctly in Bizagi Modeler, Camunda, and any other standards-compliant tool.
+
+<Note>
+  The maximum number of elements per diagram is **500** (`MAX_ELEMENTS = 500`). If you attempt to add element 501, a warning notification appears. For diagrams approaching this limit, consider splitting the process into linked sub-diagrams.
+</Note>
+
+---
+
+## Palette Display Modes
+
+The palette can be shown in three modes, configurable in **User Preferences** (`UserPreferences.paletteMode`):
+
+<CardGroup cols={3}>
+  <Card title="Grid mode" icon="grid-2">
+    All elements shown as a flat icon grid, grouped by category with a count badge. Best for users who know all element icons by heart.
+  </Card>
+  <Card title="Dropdown mode" icon="chevron-down">
+    Each category has a collapsible chevron. Only the category headings are visible by default; expand any group to reveal its elements.
+  </Card>
+  <Card title="Bizagi mode" icon="diagram-project">
+    Mirrors Bizagi Modeler's palette: a compact grid of base elements with a small dropdown arrow on each cell to access variant sub-types. Best for teams migrating from Bizagi.
+  </Card>
+</CardGroup>
+
+### Bizagi-Style Grouped Palette
+
+In **Bizagi mode**, each palette cell shows a base element. Click the small dropdown arrow on the cell to reveal its variants. The groupings come directly from `BIZAGI_GROUPS` in the source:
+
+| Base element | Variants accessible via dropdown |
+|---|---|
+| Start event | Timer, Message, Signal, Conditional |
+| Task | User, Service, Script, Send, Receive, Business Rule, Sub-process, Call activity |
+| Intermediate event | Message, Timer |
+| Exclusive gateway | Parallel, Inclusive, Event-based, Complex |
+| End event | Message, Error, Terminate |
+| Pool | Lane |
+| Group | _(no variants)_ |
+| Phase | _(no variants)_ |
+| Text annotation | _(no variants)_ |
+| Image | _(no variants)_ |
+| Data object | _(no variants)_ |
+
+---
+
+## Events (12 elements)
+
+Events represent something that **happens** during a process. They are shown as circles with visual markers inside indicating the trigger or result type.
+
+| Element key | BPMN type | Event definition | Description |
+|---|---|---|---|
+| `startEvent` | `bpmn:StartEvent` | None | Plain start event — process begins here |
+| `startTimerEvent` | `bpmn:StartEvent` | `bpmn:TimerEventDefinition` | Process triggered at a specific time or interval |
+| `startMessageEvent` | `bpmn:StartEvent` | `bpmn:MessageEventDefinition` | Process triggered by receiving a message |
+| `startSignalEvent` | `bpmn:StartEvent` | `bpmn:SignalEventDefinition` | Process triggered by a broadcast signal |
+| `startConditionalEvent` | `bpmn:StartEvent` | `bpmn:ConditionalEventDefinition` | Process triggered when a condition becomes true |
+| `intermediateEvent` | `bpmn:IntermediateCatchEvent` | None | Plain intermediate event — pause or checkpoint |
+| `intermediateMessageEvent` | `bpmn:IntermediateCatchEvent` | `bpmn:MessageEventDefinition` | Wait for an incoming message mid-process |
+| `intermediateTimerEvent` | `bpmn:IntermediateCatchEvent` | `bpmn:TimerEventDefinition` | Wait for a timer to expire mid-process |
+| `endEvent` | `bpmn:EndEvent` | None | Plain end event — process finishes normally |
+| `endMessageEvent` | `bpmn:EndEvent` | `bpmn:MessageEventDefinition` | Send a message when the process ends |
+| `endErrorEvent` | `bpmn:EndEvent` | `bpmn:ErrorEventDefinition` | Process ends by throwing an error |
+| `endTerminateEvent` | `bpmn:EndEvent` | `bpmn:TerminateEventDefinition` | Immediately terminates the entire process instance |
+
+<Info>
+  **BPMN 2.0 color convention:** start events render with a green fill, end events with a red fill, and intermediate events with a white/gray fill — matching the OMG standard color scheme.
+</Info>
+
+---
+
+## Activities (9 elements)
+
+Activities represent **work** performed within a process. All activities render as rounded rectangles with a type icon in the upper-left corner.
+
+| Element key | BPMN type | Description |
+|---|---|---|
+| `task` | `bpmn:Task` | Generic task — no specific performer or mechanism assigned |
+| `userTask` | `bpmn:UserTask` | Human-performed task; supports assignee and candidate group properties |
+| `serviceTask` | `bpmn:ServiceTask` | Automated task executed by a system or service |
+| `scriptTask` | `bpmn:ScriptTask` | Task that executes a script (e.g., JavaScript, Groovy) |
+| `sendTask` | `bpmn:SendTask` | Task that sends a message to another participant |
+| `receiveTask` | `bpmn:ReceiveTask` | Task that waits to receive a message |
+| `businessRuleTask` | `bpmn:BusinessRuleTask` | Task that invokes a business rule engine |
+| `subProcess` | `bpmn:SubProcess` | Contains a nested process; can be collapsed or expanded inline |
+| `callActivity` | `bpmn:CallActivity` | Reuses a globally defined process or task (`calledElement` attribute) |
+
+### Sub-process: Collapsed vs Expanded
+
+A sub-process has two visual states:
+
+<Tabs>
+  <Tab title="Collapsed (default)">
+    Rendered as a task with a **+** icon at the bottom center. The internal content is hidden. Size defaults to 90 × 60 px — same as a regular task.
+  </Tab>
+  <Tab title="Expanded">
+    The sub-process grows to show its internal flow elements inline on the canvas. It can contain its own start and end events. Elements inside cannot have sequence flows that leave the sub-process boundary (only exception flows from boundary events can exit).
+  </Tab>
+</Tabs>
+
+---
+
+## Gateways (5 elements)
+
+Gateways control the **flow of the process** by splitting or merging paths. They render as diamond shapes with a symbol inside.
+
+| Element key | BPMN type | Symbol | Routing semantics |
+|---|---|---|---|
+| `exclusiveGateway` | `bpmn:ExclusiveGateway` | × (X) | Exactly one outgoing path is taken (XOR) |
+| `parallelGateway` | `bpmn:ParallelGateway` | + | All outgoing paths are taken simultaneously (AND) |
+| `inclusiveGateway` | `bpmn:InclusiveGateway` | ○ | One or more outgoing paths are taken based on conditions (OR) |
+| `eventBasedGateway` | `bpmn:EventBasedGateway` | ⬠ | The first event that occurs determines the path taken |
+| `complexGateway` | `bpmn:ComplexGateway` | * | Complex routing condition defined by a custom expression |
+
+<Warning>
+  **BPMN 2.0 routing rules:**
+  - An **exclusive gateway** must have exactly 1 incoming and 2+ outgoing flows, OR 2+ incoming and 1 outgoing. A single input / single output gateway is flagged by the validator.
+  - An **event-based gateway** can only have outgoing flows that connect to intermediate events (message, timer, signal, conditional).
+</Warning>
+
+---
+
+## Connections (4 elements)
+
+Connections link flow elements together. The type of connection used depends on whether the elements are in the same pool or different pools.
+
+| Element key | BPMN type | Description |
+|---|---|---|
+| `sequenceFlow` | `bpmn:SequenceFlow` | Standard flow between elements **within the same pool** — shown as a solid arrow |
+| `messageFlow` | `bpmn:MessageFlow` | Communication **between different pools** — shown as a dashed arrow with an open arrowhead |
+| `association` | `bpmn:Association` | Connects artifacts (annotations, data objects) to flow elements — shown as a dotted line |
+| `dataAssociation` | `bpmn:DataAssociation` | Connects data objects to activities — shown as a dotted arrow |
+
+<Warning>
+  **Critical routing rules enforced by MC Modeler:**
+  - **Sequence flows** can only connect elements within the **same pool**. Attempting a cross-pool sequence flow is blocked.
+  - **Message flows** can only connect elements in **different pools**. Using a message flow within a single pool is blocked.
+  - Connections that violate these rules display an error and the connection is not created.
+</Warning>
+
+---
+
+## Containers (7 elements)
+
+Containers group or frame other elements visually or semantically.
+
+| Element key | BPMN type | Description |
+|---|---|---|
+| `pool` | `bpmn:Participant` | Represents a process participant (organization, system, role). Sequence flows stay inside; message flows cross pool boundaries. |
+| `lane` | `bpmn:Lane` | Subdivides a pool into swimlanes (department, role). Cannot exist outside a pool. |
+| `group` | `bpmn:Group` | Visual grouping artifact — no routing semantics. Shown as a rounded dashed rectangle. |
+| `phase` | `bpmn:Group` | **MC Modeler custom extension** — a vertical phase column. Maps to `bpmn:Group` in XML with a `flujo:phaseName` extension attribute. Exported as a Bizagi **Milestone** in `.bpm` format. |
+| `textAnnotation` | `bpmn:TextAnnotation` | Free-text comment linked to elements via an association. |
+| `image` | `bpmn:TextAnnotation` | An image placeholder element backed by the image library. Links to a `LibraryImage` by ID via the `flujo:linkedImages` attribute. Rendered via `ImageBadgeModule`. |
+| `dataObject` | `bpmn:DataObjectReference` | Represents data produced or consumed by activities. Default size: 36 × 50 px. |
+
+### Pool and Lane Rules
+
+```
+Pool (bpmn:Participant)
+ └─ Lane (bpmn:Lane)        ← optional, can have multiple
+     └─ Flow elements       ← tasks, events, gateways
+```
+
+- Lanes **cannot** exist outside a pool.
+- If at least one pool is present in the diagram, flow elements must be placed inside a pool or lane — they cannot float on the canvas independently.
+- A pool with no lanes is valid (pool simple).
+
+### Phase Element
+
+The **Phase** is a custom Flujo/MC Modeler extension not found in standard BPMN tools. It is stored as a `bpmn:Group` in the XML with the `flujo:phaseName` and `flujo:phaseColor` extension attributes. When exported to Bizagi's `.bpm` format, phases are converted to **Milestones** with relative coordinates inside their parent pool.
+
+```xml
+<!-- Phase stored in BPMN XML -->
+<bpmn:group id="Phase_abc123" flujo:phaseName="Approval Phase" flujo:phaseColor="#5B8DEF" />
+```
+
+---
+
+## BPMN 2.0 Rules Summary
+
+<AccordionGroup>
+  <Accordion title="Start and end events">
+    Every process with activities must have at least **one start event** and **one end event**. In a collaborative diagram with multiple pools, each pool that contains activities needs its own start and end events. The validator reports `MISSING_START_EVENT` and `MISSING_END_EVENT` errors for pools that are missing them.
+  </Accordion>
+  <Accordion title="Boundary events">
+    Boundary events attach to the border of a **task** or **sub-process** only — not to gateways, other events, or containers. Interrupting boundary events cancel the host activity when triggered; non-interrupting boundary events allow the activity to continue running.
+  </Accordion>
+  <Accordion title="Disconnected elements">
+    The validator checks all flow elements (tasks, events, gateways) for connectivity. Any element that has no incoming and no outgoing connections is reported as a `DISCONNECTED_ELEMENT` warning, except for start events (no incoming required) and end events (no outgoing required).
+  </Accordion>
+  <Accordion title="Element IDs">
+    Every element receives an auto-generated ID in the format `{Type}_{shortUUID}` (e.g., `Task_3f2a1b`, `Gateway_9c4d2e`). IDs are **immutable** after creation and are not displayed in the palette or canvas label — only in the properties panel (read-only field).
+  </Accordion>
+</AccordionGroup>

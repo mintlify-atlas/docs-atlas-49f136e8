@@ -1,47 +1,173 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Build Your First BPMN Diagram in MC Modeler (5 Minutes)"
+sidebarTitle: Quickstart
+description: "Step-by-step walkthrough of creating, editing, validating, and exporting a BPMN 2.0 process diagram — no sign-in or installation required."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
+MC Modeler runs entirely in the browser. No account, no download, and no configuration is needed to get started. This guide walks you through creating a complete, valid BPMN 2.0 process from a blank canvas, all the way to exporting a file you can open in Bizagi or Camunda.
 
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
+<Tip>
+  Every action has a keyboard shortcut. Open the shortcuts reference at any time with **Ctrl + ?** (Windows/Linux) or **⌘ + ?** (macOS).
+</Tip>
 
-## Prerequisites
-
-Before you begin, you must have:
-
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+## Steps
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+  <Step title="Open MC Modeler in your browser">
+    Navigate to your MC Modeler URL. You land on the **Diagrams** screen, which shows all diagrams saved in your browser. On first visit it will be empty.
 
-    ```bash
-    npm install your-package
-    ```
+    No sign-in prompt appears — local mode is active by default. Diagrams are saved automatically to IndexedDB in your browser.
+
+    <Info>
+      MC Modeler works fully offline after the first page load. The JavaScript bundle is cached by the browser, so you can open it without an internet connection.
+    </Info>
   </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
 
-    ```bash
-    your-cli init
-    ```
+  <Step title="Create a new diagram">
+    Click the **+ New diagram** button in the top-right corner of the Diagrams screen. A modal dialog asks for a name.
+
+    Type a name for your diagram (for example, `Purchase Order Approval`) and confirm. MC Modeler creates the diagram, saves an empty BPMN process, and immediately opens the **canvas editor**.
+
+    You can also click the large **+** card in the diagram grid — it does the same thing.
   </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
 
-    ```bash
-    your-cli start
-    ```
+  <Step title="Add BPMN elements to the canvas">
+    The left panel is the **element palette**, organized into five groups: Events, Activities, Gateways, Connections, and Containers. Drag elements from the palette onto the canvas, or click an element to place it at the canvas center.
+
+    For a minimal valid process, you need at least one Start Event, one Task, and one End Event:
+
+    1. **Start Event** — In the **Events** group, drag the plain circle (Start Event — None) onto the canvas. A green-bordered circle appears.
+    2. **Task** — In the **Activities** group, drag the plain rectangle (Task) next to the Start Event.
+    3. **End Event** — Drag the thick-bordered circle (End Event — None) to the right of the Task.
+
+    <Tip>
+      Hover over any element in the palette to see its name and a short description in a tooltip before you place it.
+    </Tip>
+  </Step>
+
+  <Step title="Connect elements with Sequence Flows">
+    To draw a **Sequence Flow** (the arrow that shows process order):
+
+    1. Hover over the Start Event on the canvas. Blue connection handles appear on its edges.
+    2. Click and drag from one of those handles to the Task. A Sequence Flow arrow is created.
+    3. Repeat the same action from the Task to the End Event.
+
+    Your canvas now shows: `Start Event → Task → End Event` — a complete, valid process path.
+
+    <Note>
+      Sequence Flows can only connect elements **within the same Pool**. To connect elements across different Pools, use a **Message Flow** from the Connections group instead.
+    </Note>
+  </Step>
+
+  <Step title="Edit element properties">
+    Click the **Task** on the canvas to select it. The **Properties Panel** on the right side of the screen updates to show the element's editable properties.
+
+    Under the **General** tab:
+
+    - **Name** — Type a meaningful name, such as `Review Purchase Request`. The label updates live on the canvas as you type.
+    - **Documentation** — Add a longer description or notes for this activity (visible in the Properties Panel; not rendered on the canvas).
+
+    Changes take effect immediately — there is no Save button for individual properties. The diagram auto-saves to the browser after a short debounce.
+
+    <Tip>
+      Double-click any element directly on the canvas to edit its name inline, without opening the Properties Panel.
+    </Tip>
+  </Step>
+
+  <Step title="Validate the diagram">
+    Click the **Validate** button (checkmark icon) in the top toolbar. MC Modeler runs a set of BPMN 2.0 rules against your diagram and opens the **Validation panel** with the results.
+
+    Common things the validator checks:
+
+    | Rule | Severity |
+    |---|---|
+    | Process has no Start Event | Error |
+    | Process has no End Event | Error |
+    | Element has no connections | Warning |
+    | Sequence Flow crosses Pool boundary | Error |
+    | Exclusive gateway has only one outgoing flow | Warning |
+
+    Clicking an entry in the Validation panel zooms to and selects the offending element on the canvas, letting you fix issues immediately.
+
+    <Info>
+      Validation runs **on demand**, not continuously. It does not block saving or exporting — you can export a diagram that has warnings.
+    </Info>
+  </Step>
+
+  <Step title="Export the diagram">
+    Click the **Export** button (download icon) in the top toolbar to open the Export modal. MC Modeler offers four formats:
+
+    <Tabs>
+      <Tab title="BPMN XML">
+        Exports a `.bpmn` file — standard BPMN 2.0 XML using the OMG namespace. This file opens without conversion in **Bizagi Modeler**, **Camunda Modeler**, and any other tool that supports the OMG standard.
+
+        ```
+        File name: <diagram-name>.bpmn
+        Content type: application/xml
+        ```
+
+        <Note>
+          `.bpmn` files exported from MC Modeler are fully round-trip compatible with Bizagi and Camunda. If you import a Bizagi file that contains proprietary `bizagi:` extension attributes, MC Modeler preserves them in the XML so they are intact when the file is reopened in Bizagi.
+        </Note>
+      </Tab>
+      <Tab title="PNG">
+        Exports a raster image. Choose the pixel density:
+
+        | Scale | Best for |
+        |---|---|
+        | 1× | Screen / quick sharing |
+        | 2× | Presentations and documents |
+        | 3× | High-resolution printing |
+
+        The export captures only the diagram content with reasonable padding — not the browser UI.
+      </Tab>
+      <Tab title="SVG">
+        Exports a scalable vector image using bpmn-js's native SVG renderer. The output is clean, includes element styles, and scales to any print size without quality loss.
+      </Tab>
+      <Tab title="PDF">
+        Exports an A4 document (landscape by default, with a portrait option). The PDF includes the diagram name as a header and the diagram image centered on the page.
+
+        The export pipeline uses bpmn-js's native SVG output, converted to PNG via `html-to-image`, then embedded into the PDF with `jsPDF`.
+      </Tab>
+    </Tabs>
+
+    Select your format and click **Export**. The file downloads immediately through the browser's standard download mechanism.
   </Step>
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+## Auto-Save Behavior
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
-</Tip>
+MC Modeler saves your work automatically — you never need to click a Save button during modeling.
+
+<Note>
+  Auto-save uses a **2-second debounce** for continuous edits (dragging elements, typing in properties). It saves **immediately** on discrete operations such as importing a file, deleting an element, or creating a new diagram. The status bar at the bottom of the screen always shows the current save state: `● Saved`, `Saving…`, or `● Unsaved changes`.
+</Note>
+
+## Keyboard Shortcuts Reference
+
+| Action | Windows / Linux | macOS |
+|---|---|---|
+| Undo | Ctrl + Z | ⌘ + Z |
+| Redo | Ctrl + Shift + Z | ⌘ + Shift + Z |
+| Save (force immediate) | Ctrl + S | ⌘ + S |
+| Delete selected element | Delete or Backspace | Delete or Backspace |
+| Copy | Ctrl + C | ⌘ + C |
+| Cut | Ctrl + X | ⌘ + X |
+| Paste | Ctrl + V | ⌘ + V |
+| Fit diagram to screen | Ctrl + Shift + H | ⌘ + Shift + H |
+| Zoom reset (100%) | Ctrl + 0 | ⌘ + 0 |
+| Open shortcuts modal | Ctrl + ? | ⌘ + ? |
+
+## What's Next
+
+<CardGroup cols={3}>
+  <Card title="Canvas & Navigation" icon="compass" href="/features/canvas">
+    Learn pan, zoom, snap-to-grid, multi-select, and the minimap.
+  </Card>
+  <Card title="BPMN Elements" icon="shapes" href="/features/bpmn-elements">
+    Full reference for every event, activity, gateway, connection, and container type.
+  </Card>
+  <Card title="Export & Import" icon="file-export" href="/features/export-import">
+    In-depth guide to all export formats and importing `.bpmn` files from Bizagi and Camunda.
+  </Card>
+</CardGroup>

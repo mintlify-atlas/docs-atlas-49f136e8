@@ -1,0 +1,153 @@
+---
+title: "Connect MC Modeler to Supabase (Full Guide)"
+sidebarTitle: "Supabase Setup"
+description: "Step-by-step guide to linking MC Modeler to your Supabase project — env vars, migrations, storage buckets, Realtime, and auth."
+---
+
+MC Modeler works entirely offline using IndexedDB when no Supabase project is connected. Setting the two environment variables below activates cloud mode: authentication, persistent diagrams, collaboration, and the image library all become available without any code changes.
+
+<Note>
+  Without `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`, MC Modeler runs in **local-only mode** (IndexedDB, no auth). Diagrams exist only in that browser and are not shared or backed up. Configure the variables below to switch to cloud mode.
+</Note>
+
+## 1. Create a Supabase Project
+
+1. Go to [supabase.com](https://supabase.com) and sign in.
+2. Click **New project**, choose an organization, name the project (e.g. `mc-modeler`), set a database password, and pick the region closest to your users.
+3. Wait for the project to finish provisioning (about 30 seconds).
+
+## 2. Get Your Project Credentials
+
+In the Supabase dashboard, go to **Settings → API**:
+
+- **Project URL** — looks like `https://<ref>.supabase.co`
+- **Project API keys → `anon` / `public`** — the public anonymous key
+
+Copy both values; you'll need them in the next step.
+
+## 3. Set Environment Variables
+
+The Supabase client in `src/lib/supabase.ts` reads exactly these two variable names:
+
+```ts
+const url     = import.meta.env.VITE_SUPABASE_URL
+const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
+```
+
+<CodeGroup>
+
+```ini .env (local development)
+# Copy this file to .env.local — never commit real keys to version control.
+VITE_SUPABASE_URL=https://<your-project-ref>.supabase.co
+VITE_SUPABASE_ANON_KEY=<your-anon-key>
+```
+
+```text Vercel (production)
+# In the Vercel dashboard → Project → Settings → Environment Variables:
+# Name: VITE_SUPABASE_URL
+# Value: https://<your-project-ref>.supabase.co
+
+# Name: VITE_SUPABASE_ANON_KEY
+# Value: <your-anon-key>
+```
+
+</CodeGroup>
+
+For other platforms (Netlify, Railway, Render, etc.) the variable names are identical — only the UI for entering them differs.
+
+## 4. Run Database Migrations
+
+The `supabase/migrations/` directory contains **18 migrations** that must be applied in order. Use the Supabase CLI (`supabase db push`) or run each file manually in the **SQL Editor** inside the dashboard.
+
+| # | File | What it creates |
+|---|------|-----------------|
+| 01 | `0001_init.sql` | Core schema: `profiles`, `folders`, `diagrams`, `diagram_collaborators`, `diagram_invites`, `yjs_documents`; RLS; `thumbnails` storage bucket |
+| 02 | `0002_harden_functions.sql` | Hardens security-definer helper functions |
+| 03 | `0003_move_helpers_to_private_schema.sql` | Moves RLS helpers to `private` schema |
+| 04 | `0004_redeem_invite_rpc.sql` | `redeem_invite` RPC for accepting collaboration invites |
+| 05 | `0005_yjs_state_as_text.sql` | Changes Yjs document state column to `text` |
+| 06 | `0006_add_subprocess_columns.sql` | Adds `parent_diagram_id` and `sub_process_element_id` columns |
+| 07 | `0007_projects_collaboration.sql` | `projects` table, project collaborators, project invites |
+| 08 | `0008_comment_delete_policies.sql` | Comment delete RLS policies |
+| 09 | `0009_notifications.sql` | `notifications` outbox table and delivery infrastructure |
+| 10 | `0010_collaborator_visibility.sql` | Lets collaborators see each other's profiles |
+| 11 | `0011_mention_thread_deeplink.sql` | Deep-link data for comment-mention notifications |
+| 12 | `0012_notification_inbox.sql` | In-app notification inbox table |
+| 13 | `0013_notification_prefs.sql` | Per-user notification preferences (`email_enabled`, `invite_events`, `mention_events`) |
+| 14 | `0014_notification_digest.sql` | Notification digest / batching logic |
+| 15 | `0015_readonly_comment_access.sql` | Read-only access to comments for `viewer` collaborators |
+| 16 | `0016_image_library.sql` | `image_folders` and `images` tables; `diagram-images` storage bucket |
+| 17 | `0017_image_library_realtime.sql` | Enables Supabase Realtime for `images` and `image_folders` |
+| 18 | `0018_drop_yjs_tables.sql` | Removes the `yjs_documents` table (superseded) |
+
+```bash
+# Using the Supabase CLI (recommended)
+supabase link --project-ref <your-project-ref>
+supabase db push
+```
+
+<Warning>
+  All migrations enable **Row Level Security (RLS)** on every table. Do not disable RLS in the Supabase dashboard. Each user can only read and write their own data (plus diagrams/projects they have been explicitly invited to). Disabling RLS would expose every user's diagrams to every other authenticated user.
+</Warning>
+
+## 5. Create Storage Buckets
+
+The migrations create both buckets automatically via SQL, but if you prefer to create them manually through the dashboard, go to **Storage → New bucket**:
+
+| Bucket name | Visibility | Purpose |
+|---|---|---|
+| `thumbnails` | Private | Diagram thumbnail images (`<diagram_id>/thumb.png`) — created in migration `0001` |
+| `diagram-images` | Private | Image library files (`<scopeId>/imglib/<uuid>.<ext>`) — created in migration `0016` |
+
+Both buckets are **private**; access is controlled by the RLS policies added in the corresponding migrations. Do not make either bucket public.
+
+## 6. Enable Realtime for the Image Library
+
+Migration `0017_image_library_realtime.sql` adds the `images` and `image_folders` tables to the `supabase_realtime` publication. If you applied all migrations via `supabase db push` this is already done. To verify manually:
+
+1. In the Supabase dashboard go to **Database → Replication**.
+2. Confirm that `images` and `image_folders` appear under the `supabase_realtime` publication.
+3. Both tables should have **Replica Identity** set to `FULL` (also applied by migration `0017`).
+
+Without Realtime enabled, images uploaded by one collaborator do not appear in other open sessions until the page is reloaded.
+
+## 7. Configure Authentication
+
+In the Supabase dashboard, go to **Authentication → Providers**:
+
+### Email (Magic Link) — recommended
+Enable the **Email** provider. MC Modeler uses magic links (passwordless): users enter their email and receive a sign-in link. No extra configuration is needed beyond enabling the provider.
+
+### Google OAuth — optional
+1. Enable the **Google** provider.
+2. Create OAuth credentials in the [Google Cloud Console](https://console.cloud.google.com/) (Credentials → Create credentials → OAuth client ID, type **Web application**).
+3. Add your Supabase callback URL (`https://<ref>.supabase.co/auth/v1/callback`) as an authorized redirect URI.
+4. Paste the **Client ID** and **Client Secret** into the Supabase Google provider settings.
+
+Users can sign in with either method — both create a row in `public.profiles` automatically via the `on_auth_user_created` trigger installed by migration `0001`.
+
+## 8. Build and Deploy
+
+```bash
+# Install dependencies
+npm install
+
+# Local development (Vite dev server on port 5174)
+npm run dev
+
+# Production build
+npm run build      # outputs to dist/
+npm run preview    # preview the production build locally
+```
+
+Deploy the contents of `dist/` to any static host (Vercel, Netlify, Cloudflare Pages, etc.). Make sure your hosting provider has the two environment variables set as described in Step 3.
+
+## Verifying the Connection
+
+After deploying (or running `npm run dev`):
+
+1. **Sign in** — open the app and use the email magic link or Google button. If the sign-in screen appears, Supabase is reachable.
+2. **Create a diagram** — click **New diagram**, give it a name, add a few elements.
+3. **Save** — press <kbd>Ctrl</kbd>+<kbd>S</kbd> (or <kbd>⌘</kbd>+<kbd>S</kbd> on Mac). The status bar should show "Saved".
+4. **Reload the page** — the diagram should reappear. If it does, data is persisting to Supabase.
+5. **Check the database** — in the Supabase dashboard, go to **Table Editor → diagrams** and confirm a row exists for the diagram you just created.

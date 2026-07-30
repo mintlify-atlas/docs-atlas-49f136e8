@@ -1,0 +1,166 @@
+---
+title: "Threaded Comments & Mentions in MC Modeler"
+sidebarTitle: "Comments"
+description: "Add threaded comments to diagram elements, @mention collaborators, receive in-app and email notifications, and deep-link directly to comment threads."
+---
+
+MC Modeler's commenting system lets collaborators discuss specific parts of a BPMN diagram without leaving the canvas. Comments are **threaded**, **anchored to diagram elements**, and sync in real time via Supabase Realtime. Every collaborator — editor or viewer — can read and write comments; only the thread owner or the diagram owner can delete a thread.
+
+## Starting a comment thread
+
+With the Comments panel open (`Ctrl+Shift+C` or the toolbar toggle), click any element on the canvas while comments mode is active. The **SelectionCommentTrigger** detects the click and opens the `NewThreadComposer` inline, pre-populated with the element's label as the anchor.
+
+Type your comment and press **Ctrl+Enter** (or click **Comment**) to create the thread. The thread is attached to the element via an `Anchor` object that stores the element ID and label:
+
+```ts
+// anchor types
+{ type: 'element'; elementId: string; elementLabel?: string }
+{ type: 'selection'; elementIds: string[] }
+```
+
+Threads remain visible in the Comments panel even if the referenced element is later deleted — they are flagged as `orphaned` and shown with an **Eliminated** badge.
+
+## The Comments panel
+
+The `CommentsPanel` component renders inside the right panel and supports three filter tabs:
+
+| Tab | Shows |
+|---|---|
+| **Open** | Threads with `status === 'open'` |
+| **Resolved** | Threads with `status === 'resolved'` |
+| **All** | Every thread regardless of status |
+
+Clicking a thread card scrolls the canvas to the anchored element and selects it. Clicking it again collapses the thread.
+
+### Replying to a thread
+
+Expand any open thread to reveal the reply textarea. Submit with **Ctrl+Enter**. Threads can be **resolved** (removes it from the Open tab) or **reopened** at any time.
+
+### Deleting comments
+
+- The **thread creator** and the **diagram owner** can delete an entire thread.
+- Any user can delete their own replies.
+
+A confirmation step ("Delete this thread? Yes / No") prevents accidental deletion.
+
+## @mentions
+
+Type `@` anywhere in the comment or reply textarea to trigger the **MentionTextarea** autocomplete dropdown. The dropdown shows up to six collaborators filtered by the characters typed after `@`.
+
+```
+@alice       → filters to users whose name contains "alice"
+↑ / ↓        → navigate the dropdown
+Enter / Tab  → insert "@Alice " and close the dropdown
+Escape       → close the dropdown without inserting
+```
+
+The mention list is populated by `listCollaborators` (diagram level) merged with `listProjectCollaborators` (project level), deduped by `userId`.
+
+When a comment containing `@Username` is saved, the `mentions` UUID array on the `comment_replies` row is populated with the user IDs. A PostgreSQL trigger (`comment_replies_mentions`) validates that each mentioned user actually has access to the diagram, then enqueues a `comment_mention` notification for each valid mention.
+
+```sql
+-- supabase/migrations/0011_mention_thread_deeplink.sql (simplified)
+INSERT INTO notification_outbox (recipient_id, recipient_email, kind, payload)
+SELECT p.id, p.email, 'comment_mention',
+       jsonb_build_object(
+         'diagramId',    d_id,
+         'diagramName',  d_name,
+         'threadId',     new.thread_id,   -- deep-link to exact thread
+         'actorName',    new.author_name,
+         'excerpt',      left(new.content, 300),
+         'elementLabel', anchor_label
+       )
+FROM ...
+```
+
+## Real-time comment sync
+
+The `SupabaseCommentBinding` (instantiated by `useComments`) listens to Supabase Realtime `postgres_changes` events on the `comment_threads` and `comment_replies` tables. New threads and replies appear for all connected users without a page reload.
+
+In local-only mode (no Supabase), `YjsCommentBinding` stores comment state in the Yjs document alongside diagram data. When Supabase is configured, comments live exclusively in Supabase tables — they are not part of the Yjs document.
+
+```ts
+// src/hooks/useComments.ts — collaborative mode setup
+export function useComments(modelerRef, activeVersion = 0) {
+  useEffect(() => {
+    if (!isSupabaseConfigured || !user || !activeTabId) return
+    const binding = new SupabaseCommentBinding(diagramId)
+    setCommentBinding(binding)
+    void binding.start()
+    // ...
+  }, [activeTabId, user?.id, activeVersion])
+}
+```
+
+## Notifications
+
+### In-app notification bell
+
+The `NotificationBell` component shows a badge with the count of unread notifications. Clicking it opens the notification panel which lists the 50 most recent notifications. Notifications are pushed in real time via a Supabase Realtime channel scoped to the user (`notifications:{userId}`).
+
+Three notification kinds are supported:
+
+| Kind | Triggered by |
+|---|---|
+| `comment_mention` | Someone @mentioned you in a comment |
+| `invite_redeemed_diagram` | A collaborator accepted your diagram invite link |
+| `invite_redeemed_project` | A collaborator accepted your project invite link |
+
+```ts
+// src/store/notificationStore.ts
+export type NotificationKind =
+  | 'invite_redeemed_diagram'
+  | 'invite_redeemed_project'
+  | 'comment_mention'
+```
+
+### Email notifications
+
+In addition to in-app notifications, MC Modeler delivers email notifications via a webhook to a Google Apps Script web app. A PostgreSQL trigger fires on every insert into `notification_outbox` and makes an async POST (`pg_net`) to the webhook URL. Failed deliveries are retried by a time-based Apps Script trigger.
+
+### Notification preferences
+
+Users control which notifications they receive from the **Notification preferences** panel (`notifications.prefsTitle`):
+
+| Preference key | UI label | Controls |
+|---|---|---|
+| `prefEmail` | Emails enabled | Master toggle for all email delivery |
+| `prefInvites` | Accepted invitations | `invite_redeemed_diagram` and `invite_redeemed_project` |
+| `prefMentions` | Comment mentions | `comment_mention` |
+
+Preferences are persisted in the `notification_prefs` table (upserted on change) and loaded at session start alongside the notification list.
+
+```ts
+// src/store/notificationStore.ts
+setPref: (key: keyof NotificationPrefs, value: boolean) => {
+  set((s) => ({ prefs: { ...s.prefs, [key]: value } }))
+  // upserts to notification_prefs table async
+}
+```
+
+## Deep-link to a comment thread
+
+Every `comment_mention` notification payload includes a `threadId`. Clicking the notification navigates to the diagram (via `?d=<diagramId>`) and highlights the specific thread (via `?thread=<threadId>`), scrolling the canvas to the anchored element and expanding the thread card automatically.
+
+```jsonc
+// notification payload (comment_mention)
+{
+  "diagramId":    "uuid",
+  "diagramName":  "Order Fulfilment",
+  "threadId":     "uuid",        // added in migration 0011
+  "actorName":    "Alice",
+  "excerpt":      "What about the error path here @Bob?",
+  "elementLabel": "Validate Order"
+}
+```
+
+## Comment visibility by role
+
+| Action | owner | editor | viewer |
+|---|---|---|---|
+| Read threads | ✅ | ✅ | ✅ |
+| Create threads | ✅ | ✅ | ✅ |
+| Reply to threads | ✅ | ✅ | ✅ |
+| Resolve / reopen | ✅ | ✅ | ✅ |
+| Delete own reply | ✅ | ✅ | ✅ |
+| Delete any thread | ✅ | ❌ | ❌ |

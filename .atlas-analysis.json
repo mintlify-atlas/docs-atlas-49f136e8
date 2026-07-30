@@ -1,0 +1,117 @@
+{
+  "projectType": "saas",
+  "projectName": "MC Modeler",
+  "projectDescription": "A web-based BPMN 2.0 process modeling tool inspired by Bizagi Modeler, featuring real-time collaboration, cloud persistence via Supabase, and full import/export interoperability with Bizagi, Camunda, and any OMG-standard BPMN tool.",
+  "theme": "willow",
+  "primaryColor": "#6f53ee",
+  "lightColor": "#b4a4f4",
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "self-hosting"
+            ]
+          },
+          {
+            "group": "Core Features",
+            "pages": [
+              "features/canvas",
+              "features/bpmn-elements",
+              "features/properties-panel",
+              "features/export-import"
+            ]
+          },
+          {
+            "group": "Collaboration",
+            "pages": [
+              "collaboration/overview",
+              "collaboration/sharing",
+              "collaboration/comments",
+              "collaboration/presence"
+            ]
+          },
+          {
+            "group": "Projects & Organization",
+            "pages": [
+              "organization/projects",
+              "organization/diagrams",
+              "organization/image-library"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/supabase-setup",
+              "configuration/preferences",
+              "configuration/keyboard-shortcuts"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Architecture",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "architecture/overview",
+              "architecture/data-model",
+              "architecture/persistence"
+            ]
+          },
+          {
+            "group": "Modules",
+            "pages": [
+              "architecture/bpmn-engine",
+              "architecture/collab-sync",
+              "architecture/validation"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "BPMN 2.0 full standard canvas with bpmn-js v18",
+    "Real-time collaboration via Supabase Realtime + Yjs CRDT",
+    "Bizagi-style palette with grouped element variants",
+    "Import/export interoperability: .bpmn, PNG, SVG, PDF, .bpm",
+    "Projects and diagram organization with trash/restore",
+    "Image library with per-element linking",
+    "Threaded comments with @mentions and notifications",
+    "Role-based access: owner, editor, viewer per diagram or project",
+    "Invite collaborators by email or shareable link",
+    "Local fallback (localStorage/IndexedDB) without Supabase",
+    "Dark and light theme with theme-aware SVG export",
+    "Spanish and English i18n (i18next)",
+    "Optimistic concurrency control (CAS) on diagram saves",
+    "Keyboard shortcuts, undo/redo, multi-select, lasso selection",
+    "Validation panel with BPMN business-rule checking"
+  ],
+  "publicApiSurface": [
+    "IDiagramRepository: getAll, getById, save, delete, restore, purge, setDiagramName, setDiagramProject",
+    "IDiagramRepository: getProjects, saveProject, deleteProject, restoreProject, purgeProject, getTrash, purgeAll",
+    "IDiagramRepository: getThumbnail, saveThumbnail, getSubProcessThumbnail, saveSubProcessThumbnail",
+    "IDiagramRepository: getFolders, saveFolder, deleteFolder, getPreferences, savePreferences",
+    "useExport: ExportFormat (bpmn | png | svg | pdf | bpm), PngScale (1|2|3), PdfOrientation, ExportTheme",
+    "useBpmnModeler: hook wrapping bpmn-js modeler instance",
+    "useCollab: hook for real-time collaborative session",
+    "useComments: hook for threaded comment management",
+    "CollabChannel: connect, disconnect (SupabaseProvider transport)",
+    "YjsBpmnBinding: CRDT binding between Y.Doc and bpmn-js canvas",
+    "BPMN_ELEMENTS: BpmnElementDef[] catalog (35 elements across 5 categories)",
+    "BIZAGI_GROUPS: BizagiGroup[] palette grouping definition",
+    "MAX_ELEMENTS: 500 (diagram element limit)",
+    "Supabase migrations: 18 migration files (init → image library realtime)",
+    "DiagramConflictError: thrown on CAS save conflict",
+    "CollaboratorRole: owner | editor | viewer",
+    "UserPreferences: language, theme, gridEnabled, gridSize, snapToGrid, autoSaveInterval, paletteMode, showComments, diagramSort"
+  ]
+}

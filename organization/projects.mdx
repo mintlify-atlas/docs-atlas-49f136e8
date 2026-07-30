@@ -1,0 +1,174 @@
+---
+title: "Projects: Grouping and Collaborating on Diagrams"
+sidebarTitle: "Projects"
+description: "Learn how MC Modeler projects group diagrams into named workspaces, support team collaboration, and how the trash and restore lifecycle works."
+---
+
+Projects are named containers that group related diagrams into a single shared workspace. Every diagram either belongs to a project or lives as a loose, unattached file — you can mix both freely. In cloud mode, sharing a project with teammates automatically grants them access to every diagram inside it, making projects the primary unit of collaboration.
+
+<Tip>
+  Use a project for each team, client, or initiative. All members see the same diagram list, and anyone with edit access can create, rename, or update diagrams directly inside the project.
+</Tip>
+
+## The Project interface
+
+```typescript
+interface Project {
+  id: string           // UUID, generated on create
+  name: string         // User-visible display name
+  ownerId: string      // auth.users id of the creator
+  createdAt: string    // ISO 8601 timestamp
+  updatedAt: string    // Updated by trigger on any change
+  deletedAt?: string | null  // Non-null means the project is in the trash
+}
+```
+
+`deletedAt` is the soft-delete sentinel. When it is `null` (or absent) the project is active; when it holds a timestamp the project is in the trash and hidden from the main list.
+
+## Creating a project
+
+Projects are available in cloud mode when Supabase is configured.
+
+1. Click the **+** icon next to the **Projects** heading in the left sidebar (triggers `onNewProject`).
+2. Enter a name in the **New project** modal and click **Create project**.
+3. The store calls `createProject(name)`, which persists the record via `saveProject` and pushes the new `Project` object into local state.
+
+```typescript
+// diagramStore.ts — createProject
+createProject: async (name) => {
+  const id = generateDiagramId()
+  const now = new Date().toISOString()
+  const project: Project = { id, name, ownerId: '', createdAt: now, updatedAt: now }
+  await diagramRepository.saveProject(project)
+  set((s) => { s.projects.push(project) })
+  return id
+}
+```
+
+The project immediately appears in the sidebar list, sorted by the current `DiagramSort` preference.
+
+## Opening a project
+
+Click any project name in the sidebar. The app sets `openProjectId` in session storage so the view survives navigating to the editor and back. The main content area (ProjectView) shows only diagrams whose `projectId` matches the open project. A breadcrumb at the top lets you return to the root view at any time.
+
+## Renaming a project
+
+Click **Rename** from the project's context menu. The store calls `renameProject(id, name)`, which re-saves the full `Project` object with the updated `name` and `updatedAt` via `saveProject`.
+
+```typescript
+renameProject: async (id, name) => {
+  const project = get().projects.find((p) => p.id === id)
+  if (!project) return
+  const updated: Project = { ...project, name, updatedAt: new Date().toISOString() }
+  await diagramRepository.saveProject(updated)
+  // ...updates local state
+}
+```
+
+## Moving a diagram into a project
+
+To reassign a diagram to a different project (or remove it from one), the store exposes `moveDiagramToProject(diagramId, projectId)`, which calls the targeted repository method `setDiagramProject`. This only updates the `project_id` column — it never rewrites the diagram's XML.
+
+```typescript
+// IDiagramRepository.ts
+setDiagramProject(diagramId: string, projectId: string | null): Promise<string | null>
+```
+
+The return value is the new `updatedAt` from the database trigger. The store adopts it immediately so subsequent saves use the correct CAS token.
+
+## Diagram list filters and sort
+
+When you are inside a project, the top bar exposes the same filter and sort controls used across the whole diagram list.
+
+**Filters** (`DiagramListFilter`):
+
+| Value | Behaviour |
+|-------|-----------|
+| `all` | Every diagram in the current scope |
+| `recent` | Modified within the last 7 days |
+| `own` | Diagrams you own (not shared with you) |
+| `shared` | Diagrams shared with you via collaboration |
+
+**Sort keys** (`DiagramSortKey`):
+
+| Key | Default direction | Description |
+|-----|-------------------|-------------|
+| `updated` | Newest first | Last-modified timestamp |
+| `created` | Newest first | Creation timestamp |
+| `name` | A–Z | Locale-aware, case-insensitive |
+| `elements` | Most first | `elementCount` on the diagram |
+
+For projects, the `elements` sort key is mapped to the number of diagrams inside the project. Clicking the active sort option reverses the direction.
+
+## Project-level collaboration
+
+Sharing a project with a teammate via the **Share project** dialog (owner only) creates a row in `project_collaborators` with a role of `editor` or `viewer`. The access-control helpers `can_access_diagram` and `can_edit_diagram` in the database join through `project_collaborators`, so every diagram whose `projectId` matches the shared project inherits the collaborator's role automatically — no per-diagram invite is required.
+
+Roles available on a project:
+
+| Role | Permissions |
+|------|-------------|
+| `owner` | Full control: rename, delete, manage collaborators |
+| `editor` | Create, edit, and rename diagrams inside the project |
+| `viewer` | Read-only access to all diagrams in the project |
+
+Invitations are token-based and can carry an optional expiry date (`expires_at`). Redeeming a token calls the `redeem_project_invite` RPC, which inserts the collaborator row.
+
+## Soft delete: sending a project to the trash
+
+Click the trash icon on any project you own. The store calls `deleteProject(id)`, which triggers `IDiagramRepository.deleteProject` — a server-side operation that sets `deleted_at` on both the project **and all of its diagrams** in one round trip. Locally, the project and its diagrams are removed from the active lists and prepended to the in-memory `trash` object with the current timestamp.
+
+A **toast notification** with an **Undo** action appears for several seconds. Clicking Undo calls `restoreProject(id)` immediately, reversing the soft delete before you navigate away.
+
+```typescript
+// diagramStore.ts — deleteProject (soft delete)
+deleteProject: async (id) => {
+  await diagramRepository.deleteProject(id)
+  const now = new Date().toISOString()
+  set((s) => {
+    const p = s.projects.find((x) => x.id === id)
+    s.projects = s.projects.filter((x) => x.id !== id)
+    if (p) s.trash.projects.unshift({ ...p, deletedAt: now })
+    const moved = s.diagrams.filter((d) => d.projectId === id)
+    s.diagrams = s.diagrams.filter((d) => d.projectId !== id)
+    moved.forEach((d) => s.trash.diagrams.unshift({ ...d, deletedAt: now }))
+  })
+}
+```
+
+## Restore from trash
+
+Open the **Trash** view from the sidebar. Each trashed project shows a **Restore** button (↺). Clicking it calls `restoreProject(id)` → `IDiagramRepository.restoreProject`, which clears `deleted_at` on the project and all its diagrams. The store moves them back to the active lists in one update.
+
+```typescript
+// IDiagramRepository.ts
+restoreProject(id: string): Promise<void>  // Restores project + its diagrams
+```
+
+## Permanent delete
+
+<Warning>
+  Permanent deletion via `purgeProject` (or **Delete permanently** in the Trash view) is **irreversible**. The project row, all its diagram rows, their thumbnails, and any linked image storage objects are deleted from the database and Supabase Storage with no possibility of recovery. Always confirm before proceeding.
+</Warning>
+
+In the Trash view, clicking the **Delete permanently** (🗑) icon opens a confirmation dialog. Confirming calls `purgeProject(id)` → `IDiagramRepository.purgeProject`, which issues a hard `DELETE` on the database rows and then asynchronously cleans up storage objects for every diagram that belonged to the project.
+
+## The trash view and `getTrash`
+
+The sidebar **Trash** entry shows a badge count (`trash.diagrams.length + trash.projects.length`). Opening the trash panel calls `loadTrash()`, which calls `IDiagramRepository.getTrash()`:
+
+```typescript
+// IDiagramRepository.ts
+getTrash(): Promise<{ diagrams: Diagram[]; projects: Project[] }>
+```
+
+Both arrays contain items where `deletedAt` is non-null. The panel renders projects and diagrams in separate rows with their deletion timestamp, **Restore**, and **Delete permanently** actions.
+
+### Empty the entire trash
+
+The **Empty trash** button at the top of the Trash view calls `emptyTrash()` → `IDiagramRepository.purgeAll()`, which hard-deletes every item currently in the trash. A confirmation dialog is shown first. This action cannot be undone.
+
+```typescript
+// IDiagramRepository.ts
+purgeAll(): Promise<void>  // Hard-deletes everything with deleted_at set
+```

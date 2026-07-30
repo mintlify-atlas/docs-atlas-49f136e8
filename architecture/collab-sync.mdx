@@ -1,0 +1,264 @@
+---
+title: "Real-Time Collaboration Architecture and Sync Protocol"
+sidebarTitle: "Collab & Sync"
+description: "How MC Modeler synchronises BPMN diagrams across peers using Yjs CRDTs, Supabase Realtime, anti-entropy state vectors, and optimistic conflict detection."
+---
+
+MC Modeler's collaboration layer is built on [Yjs](https://yjs.dev/) CRDTs transported over [Supabase Realtime](https://supabase.com/realtime) channels. Every edit — shape move, label rename, connection reroute — is encoded as a binary Yjs update and broadcast to connected peers within milliseconds. This page explains how the pieces fit together and what to watch for when extending or debugging the system.
+
+## System Overview
+
+```
+User A edits
+    │
+    ▼
+bpmn-js commandStack.changed
+    │
+    ▼
+YjsBpmnBinding.syncLocalToY()
+(debounced 40 ms)
+    │  doc.transact(delta, localOrigin)
+    ▼
+Y.Doc (in-memory CRDT)
+    │
+    ▼
+CollabChannel.sendYjsUpdate(base64)
+    │  Supabase Realtime broadcast 'yjs'
+    ▼
+─────────────── network ───────────────
+    │
+    ▼
+User B: broadcast 'yjs' received
+    │  base64 → Uint8Array → Y.applyUpdate
+    ▼
+YjsBpmnBinding observer fires
+    │
+    ▼
+applyRemote() → modeling.moveElements / createShape / updateWaypoints …
+    │
+    ▼
+bpmn-js canvas updated (User B)
+```
+
+---
+
+## YjsBpmnBinding (`src/collab/YjsBpmnBinding.ts`)
+
+`YjsBpmnBinding` is the bridge between a `Y.Doc` (the CRDT document) and the bpmn-js modeler instance. It owns two data flows:
+
+### Local → Y (bpmn-js changes propagate to the doc)
+
+1. `commandStack.changed` fires on the modeler's event bus.
+2. `scheduleLocalSync()` sets a 40 ms debounce timer (`SYNC_DEBOUNCE_MS = 40`).
+3. `syncLocalToY()` computes a diff between `this.last` (previous snapshot map) and `currentSnapshots()` (current element registry state).
+4. Changed entries are written into `ymap` inside a `doc.transact(…, this.origin)` call. The local origin symbol prevents the observer from re-applying the change.
+
+### Y → Local (remote changes applied to canvas)
+
+1. `this.ymap.observe(observer)` fires when any peer writes to the `Y.Map<ElementSnapshot>`.
+2. If `tx.origin === this.origin`, the change came from this client — skip.
+3. Otherwise `applyRemote(event)` classifies keys as `adds`, `updates`, or `removes` and applies them in order:
+   - Shapes (non-connections) added, sorted containers-first (`bpmn:Participant` → `bpmn:Lane` → rest).
+   - Connections added.
+   - Shape updates, then connection updates.
+   - Removals.
+4. A `correctivePass` re-applies any snapshot whose canvas value drifted after the first pass (due to layouter side-effects).
+
+<Note>
+  `this.suppress = true` is set for the entire `applyRemote` call. A high-priority interceptor on `commandStack.changed` (priority 5000) returns `false` while `suppress` is true, which prevents `LabelEditingProvider` from cancelling the user's active inline-edit when a remote operation arrives.
+</Note>
+
+### Connection deduplication
+
+Before `createConnection` places a new edge it calls `sameConnectionExists(source, target, snap)`. Two connections are considered the same if they share the same type, same target, and **identical rounded waypoints**. This prevents ghost duplicates that appear when two clients independently create the same edge before the first update is received.
+
+### Parent resolution (`resolveParentOrSkip`)
+
+When creating a shape from a remote snapshot, the parent element must exist locally. The resolution logic:
+
+| Condition | Result |
+|---|---|
+| No parent declared | Canvas root |
+| Parent id found in `elementRegistry` | That element |
+| Parent id equals `canvasRoot.id` | Canvas root |
+| Parent not resolvable + canvas has no pools yet | Canvas root (pool in Yjs-only diagrams) |
+| Parent not resolvable + canvas already has pools | **`null` — discard** (contamination from another diagram) |
+
+---
+
+## Sync Protocol (`src/collab/syncProtocol.ts`)
+
+The Supabase broadcast channel is **fire-and-forget**: a missed message means permanent divergence for that session unless a repair mechanism exists. The sync protocol provides two:
+
+### Broadcast coalescer
+
+During a drag, bpmn-js fires `commandStack.changed` at ~25 Hz. Each change produces a Yjs update. Broadcasting every update individually would hit Supabase Realtime's rate limits and cause silent drops.
+
+`createBroadcastCoalescer(send, windowMs)` accumulates updates in a 150 ms window and calls `Y.mergeUpdates(pending)` before sending — reducing ~25 msg/s to ~7 with no perceptible latency increase.
+
+```typescript
+export const BROADCAST_COALESCE_MS = 150
+
+export function createBroadcastCoalescer(
+  send: (merged: Uint8Array) => void,
+  windowMs = BROADCAST_COALESCE_MS
+): Coalescer {
+  // push() accumulates; flush() merges and sends immediately
+}
+```
+
+### Anti-entropy (state vector exchange)
+
+Every 20 seconds (`ANTIENTROPY_INTERVAL_MS = 20000`) each client broadcasts its own Yjs state vector:
+
+```typescript
+export function encodeOwnStateVector(doc: Y.Doc): Uint8Array {
+  return Y.encodeStateVector(doc)
+}
+```
+
+When a peer receives a foreign state vector it computes the diff and sends it back:
+
+```typescript
+export function diffForPeer(doc: Y.Doc, remoteStateVector: Uint8Array): Uint8Array | null {
+  const diff = Y.encodeStateAsUpdate(doc, remoteStateVector)
+  return diff.length > 2 ? diff : null  // 2-byte empty update → nothing to send
+}
+```
+
+This ensures convergence even after dropped messages. A late joiner that missed the first 30 seconds of edits will receive the missing diff within one anti-entropy cycle.
+
+---
+
+## CollabChannel / SupabaseProvider (`src/collab/SupabaseProvider.ts`)
+
+One Supabase Realtime channel per diagram: **`diagram:{diagramId}`**.
+
+### Three event types
+
+<Tabs>
+  <Tab title="presence (sync)">
+    Tracks who is online. Each client calls `channel.track(participantMeta)` on subscribe. The `onPresence` callback receives a fresh `ParticipantMeta[]` array on every presence sync:
+    ```typescript
+    interface ParticipantMeta {
+      userId: string
+      name: string
+      color: string  // hex color assigned to this user
+    }
+    ```
+  </Tab>
+  <Tab title="broadcast cursor">
+    Real-time cursor positions in **diagram coordinates** (not viewport pixels). Sent on every mouse move via `sendCursor(cursor)`. The payload is `{ userId, cursor: { x, y } | null }`. `null` means the cursor left the canvas.
+
+    Cursors are ephemeral — they are not stored in the Y.Doc.
+  </Tab>
+  <Tab title="broadcast yjs">
+    Binary Yjs updates encoded as base64. Sent by the coalescer; applied by `Y.applyUpdate(doc, bytes)` on receipt.
+
+    A second event type `yjs-sv` carries state vectors for the anti-entropy loop.
+  </Tab>
+</Tabs>
+
+### Join / subscribe callbacks
+
+| Callback | When it fires | What to do |
+|---|---|---|
+| `onSubscribed` | Channel status becomes `SUBSCRIBED` | Broadcast the **full Y.Doc state** (`Y.encodeStateAsUpdate(doc)`) so any peer already in the room gets the latest snapshot |
+| `onJoin(userId)` | A new participant joins (key ≠ own userId) | Re-broadcast full state so the new joiner converges immediately |
+
+```typescript
+channel.subscribe((status) => {
+  if (status === 'SUBSCRIBED') {
+    void channel.track(this.me)
+    handlers.onSubscribed?.()
+  }
+})
+```
+
+<Tip>
+  The `onJoin` + `onSubscribed` handshake only covers *connect/reconnect* scenarios. The periodic anti-entropy state vector exchange (every 20 s) handles the case where a message was silently dropped while all peers stayed connected.
+</Tip>
+
+---
+
+## Canvas Session (`src/collab/canvasSession.ts`)
+
+`canvasSession` provides **fencing tokens** for the bpmn-js canvas lifecycle. Because `importXML` is async and tab switches can start a new import before the previous one finishes, the session tracks which import is the *authoritative* one:
+
+```typescript
+export function beginImport(): number       // returns a monotonic token
+export function completeImport(token: number, diagramId: string): void
+export function isCanvasReadyFor(diagramId: string): boolean
+```
+
+If `completeImport` is called with a token that is no longer the latest (because a second import started), the call is a no-op — the stale result is silently discarded. This prevents the collaboration layer from attaching to a canvas that is mid-import and still showing the previous diagram's content.
+
+---
+
+## Y.Doc Data Model (`src/collab/yBpmnModel.ts`)
+
+The Y.Doc contains a single `Y.Map` keyed `'elements'`. Each value is an `ElementSnapshot`:
+
+```typescript
+export interface ElementSnapshot {
+  id: string
+  type: string          // e.g. 'bpmn:Task', 'bpmn:SequenceFlow'
+  parent: string | null
+  // Shapes
+  x?: number
+  y?: number
+  width?: number
+  height?: number
+  // Connections
+  source?: string | null
+  target?: string | null
+  waypoints?: Waypoint[]
+  manualRoute?: boolean  // true if user has manually routed this connection
+  // businessObject properties
+  name?: string
+  text?: string          // bpmn:TextAnnotation (includes embedded '[IMAGE:...]')
+  eventDefinition?: string | null
+  linkedDiagram?: string | null
+  linkedImages?: string | null
+  phaseName?: string | null
+}
+```
+
+### What is and is not synced
+
+| Synced | Not synced |
+|---|---|
+| Shape position, size | Canvas zoom / pan |
+| Connection waypoints, manual-route flag | Selection state |
+| Element name, text, type | Undo/redo history |
+| Phase name, phase color | Comments (stored in Supabase tables, not Y.Doc) |
+| SubProcess linked diagram id | UI panel state |
+
+The `isSyncable(el)` guard excludes `label` type elements, `bpmn:Process`, `bpmn:Collaboration`, and root-level elements without a parent.
+
+Waypoint coordinates are rounded to integers via `Math.round` before storing (`elementToSnapshot`) to prevent coordinate drift accumulating across peers over time.
+
+---
+
+## Optimistic CAS (Concurrent Save Detection)
+
+When saving to Supabase, the app passes the `expectedUpdatedAt` timestamp it read at load time. If another user saved the same diagram between the load and this save, Supabase returns a conflict and the app throws a `DiagramConflictError`. The UI then either re-fetches and retries automatically or shows a conflict toast asking the user what to do.
+
+This is a standard optimistic concurrency pattern — the Y.Doc handles *element-level* merges automatically, but the Supabase row-level save still needs a CAS guard to prevent the last writer from silently overwriting a peer's committed changes at the persistence layer.
+
+---
+
+## Read-Only Mode
+
+For users with the viewer role, the collaboration layer connects in a reduced capacity:
+
+<CardGroup cols={2}>
+  <Card title="Connected (read)" icon="eye">
+    `CollabChannel` is fully connected — presence sync and cursor broadcast work normally so viewers appear in the participants list and their cursors are visible to editors.
+  </Card>
+  <Card title="Disconnected (write)" icon="lock">
+    `YjsBpmnBinding` is **not** instantiated. No local changes flow to the Y.Doc. `ReadOnlyModule` in bpmn-js vetoes all modeling operations at priority 3000 so the canvas itself is inert.
+  </Card>
+</CardGroup>
+
+Switching from viewer to editor (e.g. after a permission change) requires reconnecting the full binding: dispose the existing `CollabChannel`, recreate with the `onYjsUpdate` handler, and call `YjsBpmnBinding.start()` on the same `Y.Doc`. The doc state is already up to date, so no re-sync is needed.

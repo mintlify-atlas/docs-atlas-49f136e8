@@ -1,0 +1,194 @@
+---
+title: "BPMN Validation System: Rules, Codes, and Integration"
+sidebarTitle: "Validation"
+description: "Reference for MC Modeler's on-demand BPMN validation: RF-07 rules, all error codes, ValidationResult type, visual feedback, and export integration."
+---
+
+MC Modeler validates diagrams against a set of BPMN 2.0 correctness rules defined in `src/domain/validation.ts`. Validation is intentionally **on-demand** — it runs only when explicitly triggered, never continuously in the background. This keeps the modelling experience distraction-free while still surfacing structural problems before export or handoff.
+
+<Note>
+  Validation runs on the **current XML snapshot extracted from bpmn-js** (via `elementRegistry.getAll()`), not on the Zustand store. The store holds diagram metadata (id, name, timestamps); the authoritative element graph lives inside the modeler instance at all times.
+</Note>
+
+---
+
+## How Validation is Triggered
+
+Validation is **on-demand only**:
+
+- The **Validate** button in the menu bar (RF-07.6).
+- Programmatically: call `validateDiagram(elementRegistry, t)` directly from any hook or utility — the function is a pure TypeScript function with no React or bpmn-js dependency beyond the `elementRegistry` reference.
+
+There is no continuous/real-time validation. This is an intentional design choice documented in the project spec (RF-07.6): real-time linting while modelling creates visual noise and interrupts the flow of work. A user building a diagram may intentionally leave it in an intermediate incomplete state for minutes at a time.
+
+---
+
+## ValidationResult Type
+
+Every issue returned by `validateDiagram` conforms to this interface (defined in `src/domain/types.ts`):
+
+```typescript
+interface ValidationResult {
+  id: string                    // crypto.randomUUID() — unique per call
+  elementId: string | null      // null = global diagram error (no specific element)
+  elementName: string | null    // bo.name at validation time, or null
+  severity: 'error' | 'warning'
+  code: string                  // machine-readable, e.g. 'MISSING_END_EVENT'
+  message: string               // already translated to the active language via t()
+}
+```
+
+The `id` field is a fresh UUID on each validation run — it is not stable across runs and should not be stored or compared across calls.
+
+---
+
+## Validation Rules (RF-07)
+
+The `validateDiagram(elementRegistry, t)` function iterates all elements in the registry and applies the following checks:
+
+### Process-level checks
+
+For each `bpmn:Process` element found in the registry, the validator inspects `proc.children`:
+
+<AccordionGroup>
+  <Accordion title="MISSING_START_EVENT (error)" icon="circle-x">
+    **Rule:** Every process must have at least one `bpmn:StartEvent` among its direct children.
+
+    **Code:** `MISSING_START_EVENT`  
+    **Severity:** `error`  
+    **elementId:** The process element id  
+
+    A pool without a start event cannot be executed and is structurally incomplete according to BPMN 2.0.
+  </Accordion>
+  <Accordion title="MISSING_END_EVENT (error)" icon="circle-x">
+    **Rule:** Every process must have at least one `bpmn:EndEvent` among its direct children.
+
+    **Code:** `MISSING_END_EVENT`  
+    **Severity:** `error`  
+    **elementId:** The process element id  
+
+    Mirrors the start-event check. Together, these two rules implement RF-07.1 and RN-03.
+  </Accordion>
+</AccordionGroup>
+
+### Element-level checks
+
+After the process-level pass, the validator iterates all **flow elements** (tasks, events, gateways) excluding containers, annotations, and data objects:
+
+<AccordionGroup>
+  <Accordion title="DISCONNECTED_ELEMENT (warning)" icon="triangle-alert">
+    **Rule:** A flow element that has **zero** incoming connections **and** zero outgoing connections is considered disconnected.
+
+    **Code:** `DISCONNECTED_ELEMENT`  
+    **Severity:** `warning`  
+    **elementId:** The disconnected element's id  
+
+    Start events and end events are exempt from the incoming/outgoing checks respectively (a start event legitimately has no incoming flow; an end event has no outgoing flow). The exclusion logic:
+
+    ```typescript
+    const isStart = bo?.$type === 'bpmn:StartEvent'
+    const isEnd   = bo?.$type === 'bpmn:EndEvent'
+
+    if (!isStart && incoming === 0 && !isEnd && outgoing === 0) {
+      // DISCONNECTED_ELEMENT warning
+    }
+    ```
+
+    Excluded element types (checked by `$type` string match): `Flow` subtypes, `Process`, `Participant`, `Lane`, `Collaboration`, `TextAnnotation`, `Group`, `DataObject`.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Validation Codes Reference
+
+| Code | Severity | Meaning |
+|---|---|---|
+| `MISSING_START_EVENT` | `error` | Process has no start event |
+| `MISSING_END_EVENT` | `error` | Process has no end event |
+| `DISCONNECTED_ELEMENT` | `warning` | Flow element has no incoming and no outgoing connections |
+
+<Info>
+  The severity convention follows the project spec: `error` means the diagram violates the BPMN 2.0 spec and cannot be correctly executed. `warning` means a best-practice violation — the diagram is structurally valid but likely incomplete or problematic in practice.
+</Info>
+
+---
+
+## Visual Feedback
+
+When the ValidationModal displays results, two additional feedback mechanisms activate on the canvas:
+
+<CardGroup cols={2}>
+  <Card title="Red border highlight" icon="border-all">
+    Elements with `severity: 'error'` receive a red border highlight on the canvas. This is applied via CSS selector on the `.djs-shape` GFX node using the `elementId` from the `ValidationResult`.
+  </Card>
+  <Card title="Status bar counter" icon="circle-dot">
+    The bottom status bar shows a pill with the count of errors and warnings, e.g. `● 1 error · 1 warning`. Clicking it opens the ValidationModal.
+  </Card>
+</CardGroup>
+
+### Clicking an error in ValidationModal
+
+Clicking any `ValidationResult` row that has a non-null `elementId` calls `useBpmnModeler().scrollToElement(elementId)`, which:
+1. Calls `modeler.get('selection').select(el)` to select the element.
+2. Calls `modeler.get('canvas').scrollToElement(el)` to center the viewport on it.
+
+This is the implementation of RF-07.4: "click on an error → the canvas zooms and selects the element."
+
+---
+
+## Integration with Export
+
+Validation errors do **not** block export. A user can export an invalid diagram in any format (BPMN XML, PNG, SVG, PDF) regardless of outstanding errors or warnings.
+
+The only export guard is for **empty diagrams**: when the diagram has no elements, the export button shows a tooltip explaining that there is nothing to export. This check is independent of validation — it is based on element count, not validation results.
+
+```
+┌─ Export button logic ───────────────────────────────┐
+│                                                     │
+│  elementCount === 0  →  disabled + tooltip          │
+│  elementCount > 0    →  always enabled              │
+│                         (even with validation errors)│
+└─────────────────────────────────────────────────────┘
+```
+
+This is intentional: preventing export on invalid diagrams would block legitimate workflows such as sharing a work-in-progress for review or exporting an incomplete template for reuse.
+
+---
+
+## Extending the Validator
+
+`validateDiagram` is a **pure function** in `src/domain/validation.ts` — it takes an `elementRegistry`-like object and a translation function, returns `ValidationResult[]`, and has no side effects. To add a new rule:
+
+<Steps>
+  <Step title="Add a new code constant">
+    Add your code string (e.g. `'GATEWAY_MISSING_OUTGOING'`) to the translation files (`src/i18n/es.json` and `en.json`) under `validation.errors`.
+  </Step>
+  <Step title="Implement the rule in validateDiagram">
+    Filter the element list for the relevant type, apply your check, and push a `ValidationResult`:
+    ```typescript
+    results.push({
+      id: crypto.randomUUID(),
+      elementId: el.id,
+      elementName: el.businessObject?.name ?? null,
+      severity: 'error',
+      code: 'GATEWAY_MISSING_OUTGOING',
+      message: t('validation.errors.GATEWAY_MISSING_OUTGOING'),
+    })
+    ```
+  </Step>
+  <Step title="Add a unit test">
+    `validateDiagram` takes a plain object with a `getAll()` method, so tests need no bpmn-js instance:
+    ```typescript
+    const registry = { getAll: () => [mockProcess, mockGateway] }
+    const results = validateDiagram(registry, (k) => k)
+    expect(results).toContainEqual(
+      expect.objectContaining({ code: 'GATEWAY_MISSING_OUTGOING' })
+    )
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+  Do not import Zustand stores or React hooks inside `src/domain/validation.ts`. The domain layer must remain free of UI dependencies so it can be tested in isolation and potentially reused in a Node.js context (e.g. CI linting).
+</Warning>

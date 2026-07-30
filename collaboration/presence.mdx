@@ -1,0 +1,178 @@
+---
+title: "Live Presence & Cursor Tracking in MC Modeler"
+sidebarTitle: "Presence"
+description: "See colored avatars for every online collaborator and watch their cursors move across the BPMN canvas in real time with MC Modeler."
+---
+
+When multiple users have the same diagram open, MC Modeler displays a **presence strip** of colored avatar circles in the toolbar and renders each collaborator's cursor directly on the canvas. Presence data is carried by Supabase Realtime with no polling — updates appear within milliseconds of a collaborator moving their mouse or joining the session.
+
+<Note>
+  Presence features require both Supabase and an authenticated session. In local-only mode (no Supabase configured) or when signed out, the presence strip and live cursors are not shown.
+</Note>
+
+## Participant identity
+
+Each participant is described by a `ParticipantMeta` record:
+
+```ts
+// src/collab/presence.ts
+export interface ParticipantMeta {
+  userId: string
+  name: string
+  color: string
+}
+```
+
+The `name` comes from the authenticated user's `full_name`, `name`, or `email` (in that priority order). The `color` is deterministically derived from the `userId` using a simple hash against a fixed 10-color palette — the same user always gets the same color across sessions and devices:
+
+```ts
+// src/collab/presence.ts
+const PALETTE = [
+  '#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6d4',
+  '#3b82f6', '#8b5cf6', '#ec4899', '#14b8a6', '#f43f5e',
+]
+
+export function colorForUser(userId: string): string {
+  let hash = 0
+  for (let i = 0; i < userId.length; i++) {
+    hash = (hash << 5) - hash + userId.charCodeAt(i)
+    hash |= 0
+  }
+  return PALETTE[Math.abs(hash) % PALETTE.length]
+}
+```
+
+Avatar initials are computed from the user's display name:
+
+```ts
+// single name   → first two characters: "Alice"  → "AL"
+// two+ names    → first + last initial: "Bob Day" → "BD"
+export function initialsOf(name: string): string
+```
+
+## Presence channel
+
+On connecting to a diagram, each client calls `channel.track(me)` to publish their `ParticipantMeta` into the Supabase Realtime **presence** slot keyed by `userId`. The channel name is `diagram:{diagramId}`.
+
+```ts
+// src/collab/SupabaseProvider.ts
+const channel = supabase.channel(`diagram:${this.diagramId}`, {
+  config: { presence: { key: this.me.userId } },
+})
+
+channel.on('presence', { event: 'sync' }, () => {
+  const state = channel.presenceState<ParticipantMeta>()
+  const participants = Object.values(state)
+    .map((entries) => entries[0])
+    .filter(Boolean)
+    .map((e) => ({ userId: e.userId, name: e.name, color: e.color }))
+  handlers.onPresence(participants)
+})
+```
+
+Every presence `sync` event (join, leave, or network update) rebuilds the full participant list and pushes it into `usePresenceStore`, which both `PresenceAvatars` and `RemoteCursors` subscribe to.
+
+## Presence avatars
+
+The `PresenceAvatars` component renders in the toolbar whenever **more than one participant** is online (showing yourself alone adds no value):
+
+```tsx
+// src/components/collab/PresenceAvatars.tsx
+const shown = list.slice(0, 5)       // show at most 5 avatars
+const extra = list.length - shown.length
+// overflow: "+3" badge when more than 5 are online
+```
+
+Each avatar is a colored circle with the participant's initials. Hovering shows their full name; the current user's avatar is labelled `"${name} (tú)"` (yourself).
+
+## Cursor state
+
+Cursor positions are transmitted as a separate `CursorState` — intentionally outside the Realtime presence slot:
+
+```ts
+// src/collab/presence.ts
+export interface CursorState {
+  x: number   // diagram-space coordinate (not screen pixels)
+  y: number
+}
+```
+
+Coordinates are in **diagram space**, not screen space. This is critical: two users at different zoom levels must see each other's cursors at the correct element, not the correct pixel. The conversion from mouse event to diagram coordinates uses the canvas `viewbox`:
+
+```ts
+// src/hooks/useCollab.ts (cursor send, throttled to 50 ms)
+const vb = modeler.get('canvas').viewbox()
+const rect = wrap.getBoundingClientRect()
+const c: CursorState = {
+  x: vb.x + (e.clientX - rect.left) / vb.scale,
+  y: vb.y + (e.clientY - rect.top)  / vb.scale,
+}
+channel.sendCursor(c)
+```
+
+When the mouse leaves the canvas, `sendCursor(null)` is called and the cursor is removed from other users' views.
+
+## Cursor broadcast
+
+Cursors are sent as Supabase Realtime **broadcast** events (event name: `'cursor'`) rather than presence updates. Broadcast has lower overhead and higher frequency tolerance than presence, which makes it better suited for the ~50 ms throttle interval used for cursor updates:
+
+```ts
+// src/collab/SupabaseProvider.ts
+sendCursor(cursor: CursorState | null): void {
+  void this.channel.send({
+    type: 'broadcast',
+    event: 'cursor',
+    payload: { userId: this.me.userId, cursor },
+  })
+}
+```
+
+The `onCursor` handler in `useCollab` forwards cursor positions to `usePresenceStore`, which stores them in a `Participant` record (extending `ParticipantMeta` with `cursor: CursorState | null`).
+
+## Rendering remote cursors
+
+The `RemoteCursors` component overlays a positioned `div` layer on the canvas. For each remote participant with a non-null cursor it renders an SVG arrow pointer in their color, followed by a name label:
+
+```tsx
+// src/components/collab/RemoteCursors.tsx
+// Convert diagram coords → screen coords using current viewbox
+const sx = (p.cursor!.x - vb.x) * vb.scale
+const sy = (p.cursor!.y - vb.y) * vb.scale
+
+<div style={{ transform: `translate(${sx}px, ${sy}px)` }}>
+  <svg fill={p.color} ...>  {/* arrow icon */}  </svg>
+  <span style={{ background: p.color }}>{p.name}</span>
+</div>
+```
+
+The component re-renders on every `canvas.viewbox.changed` event (zoom or pan) so cursors stay aligned when the local user scrolls or zooms.
+
+## Cursor lifecycle
+
+| Event | Cursor behavior |
+|---|---|
+| User moves mouse on canvas | Cursor position updates every ≤50 ms |
+| User moves mouse off canvas | `sendCursor(null)` — cursor disappears |
+| User closes the tab / disconnects | Presence `leave` event — participant removed from list, cursor disappears |
+| User becomes idle (no movement) | Cursor freezes at last known position until they move again |
+
+## Canvas session and connection lifecycle
+
+A `canvasSession` module tracks whether the local canvas is currently displaying a specific `diagramId`. The `useCollab` hook waits for an explicit confirmation signal (`isCanvasReadyFor(diagramId)`) before starting the Yjs binding — this prevents cross-contamination between diagrams during tab switches.
+
+```ts
+// src/hooks/useCollab.ts
+channel.connect({
+  onPresence: setParticipants,
+  onCursor:   setCursor,
+  onSubscribed: sendFullState,   // late-joiner sync
+  onJoin:     () => sendFullState(),
+  // ...
+})
+```
+
+On unmount (tab close or diagram switch) the hook calls `channel.disconnect()` and `reset()` (clears participants and cursors from the store), ensuring stale data from the previous diagram never bleeds into the next.
+
+## Project-level presence indicator
+
+The `useDiagramsPresence` hook extends presence awareness to the diagrams list: cards for diagrams that currently have active participants show a live indicator, letting users see at a glance which diagrams their teammates are working in without opening them.

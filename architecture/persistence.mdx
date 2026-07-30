@@ -1,0 +1,552 @@
+---
+title: "MC Modeler Persistence Layer: Repository Pattern"
+sidebarTitle: "Persistence"
+description: "Deep dive into the repository pattern, LocalRepository, SupabaseRepository, auto-save with CAS conflict handling, and the soft-delete trash system."
+---
+
+The persistence layer is the most carefully designed part of MC Modeler's architecture. It is built around a single principle: **no store, hook, or component ever knows which storage backend is active.** All storage goes through one interface, and swapping implementations requires changing exactly one line of code.
+
+<Info>
+  The repository pattern was chosen from the start specifically to make the local→cloud migration zero-cost for the rest of the codebase. Stores, hooks, and components call `diagramRepository` methods — they have no knowledge of IndexedDB, Supabase, or any other backend.
+</Info>
+
+---
+
+## The IDiagramRepository Interface
+
+This interface is the **immutable contract** for all persistence. It is defined in `/src/persistence/IDiagramRepository.ts` and must never change in ways that break existing implementations.
+
+```typescript
+// /src/persistence/IDiagramRepository.ts
+
+/**
+ * Thrown when an optimistic CAS save detects that the diagram was modified
+ * by another writer since this client loaded it (the expected updated_at no
+ * longer matches). The caller decides: re-sync and retry, or notify the user.
+ */
+export class DiagramConflictError extends Error {
+  constructor(public readonly diagramId: string) {
+    super(
+      `Conflicto de guardado: el diagrama ${diagramId} fue modificado por otro usuario`
+    )
+    this.name = 'DiagramConflictError'
+  }
+}
+
+export interface IDiagramRepository {
+  // ── Diagrams ──────────────────────────────────────────────────────────────
+
+  getAll(): Promise<Diagram[]>
+  getById(id: string): Promise<Diagram | null>
+
+  /**
+   * Saves the diagram. If `expectedUpdatedAt` is provided, applies optimistic
+   * CAS: only updates if the DB's updated_at matches the expected value; if not,
+   * throws DiagramConflictError. Returns the persisted updated_at
+   * (server-authoritative). Callers MUST adopt this as their new CAS token.
+   */
+  save(diagram: Diagram, expectedUpdatedAt?: string): Promise<string>
+
+  /** Soft delete: sets deleted_at (moves to trash). Preserves thumbnail and images. */
+  delete(id: string): Promise<void>
+
+  /** Removes from trash (sets deleted_at = null). */
+  restore(id: string): Promise<void>
+
+  /** PERMANENT delete (real DELETE + thumbnail). Irreversible. */
+  purge(id: string): Promise<void>
+
+  /**
+   * Renames WITHOUT touching current_xml. Never use save() to rename:
+   * it would write the in-memory XML (possibly stale) without CAS,
+   * silently clobbering another user's work.
+   * Returns the new updated_at if the row changed (trigger bumps it), or null.
+   */
+  setDiagramName(id: string, name: string): Promise<string | null>
+
+  // ── Projects ──────────────────────────────────────────────────────────────
+
+  getProjects(): Promise<Project[]>
+  saveProject(project: Project): Promise<void>
+
+  /** Soft delete of the project AND its diagrams together. */
+  deleteProject(id: string): Promise<void>
+
+  /** Restores the project and its soft-deleted diagrams. */
+  restoreProject(id: string): Promise<void>
+
+  /** PERMANENT delete of the project and all its diagrams. Irreversible. */
+  purgeProject(id: string): Promise<void>
+
+  /** Trash contents (diagrams + projects with deleted_at set). */
+  getTrash(): Promise<{ diagrams: Diagram[]; projects: Project[] }>
+
+  /** Empties trash: PERMANENT delete of everything with deleted_at set. */
+  purgeAll(): Promise<void>
+
+  /** Returns new updated_at if the row changed, or null. */
+  setDiagramProject(diagramId: string, projectId: string | null): Promise<string | null>
+
+  // ── Thumbnails ────────────────────────────────────────────────────────────
+
+  getThumbnail(id: string): Promise<string | null>
+
+  /**
+   * Returns new updated_at if it had to touch the diagrams row
+   * (thumbnail_path change triggers updated_at bump). Callers MUST
+   * adopt this as their CAS version; ignoring it leaves the client
+   * stale after its own save (phantom conflicts).
+   */
+  saveThumbnail(id: string, dataUrl: string): Promise<string | null>
+
+  // Sub-process overlay thumbnails — keyed separately
+  getSubProcessThumbnail(parentId: string, elementId: string): Promise<string | null>
+  saveSubProcessThumbnail(parentId: string, elementId: string, dataUrl: string): Promise<void>
+  deleteSubProcessThumbnail(parentId: string, elementId: string): Promise<void>
+
+  // Recursively soft-deletes a diagram and all its sub-process descendants
+  deleteWithChildren(id: string): Promise<void>
+
+  // ── Folders ───────────────────────────────────────────────────────────────
+
+  getFolders(): Promise<Folder[]>
+  saveFolder(folder: Folder): Promise<void>
+  deleteFolder(id: string): Promise<void>
+
+  // ── Preferences ───────────────────────────────────────────────────────────
+
+  getPreferences(): Promise<UserPreferences>
+  savePreferences(prefs: UserPreferences): Promise<void>
+}
+```
+
+---
+
+## The Single Binding Point
+
+`/src/persistence/index.ts` is the **only** file that knows which implementation is active. It is the only place you need to change when switching backends.
+
+```typescript
+// /src/persistence/index.ts
+
+import { LocalRepository }        from './LocalRepository'
+import { SupabaseRepository }     from './SupabaseRepository'
+import { LocalImageRepository }   from './LocalImageRepository'
+import { SupabaseImageRepository } from './SupabaseImageRepository'
+import { isSupabaseConfigured }   from '@/lib/supabase'
+import type { IDiagramRepository } from './IDiagramRepository'
+import type { IImageRepository }   from './IImageRepository'
+
+/**
+ * Backend selection:
+ *  - Supabase configured (VITE_SUPABASE_*) → cloud persistence.
+ *  - Otherwise → local IndexedDB (offline/anonymous mode).
+ *
+ * A single exported instance so no call site needs to change.
+ */
+export const diagramRepository: IDiagramRepository = isSupabaseConfigured
+  ? new SupabaseRepository()
+  : new LocalRepository()
+
+export const imageRepository: IImageRepository = isSupabaseConfigured
+  ? new SupabaseImageRepository()
+  : new LocalImageRepository()
+```
+
+`isSupabaseConfigured` is a boolean computed at module load time — it checks whether `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` environment variables are present. If they are not set, the app falls back to fully offline local mode with no authentication required.
+
+<Warning>
+  Never import `LocalRepository` or `SupabaseRepository` directly in stores, hooks, or components. Always import `diagramRepository` from `@/persistence`. Violating this rule defeats the entire abstraction.
+</Warning>
+
+---
+
+## LocalRepository
+
+`LocalRepository` implements `IDiagramRepository` using [localforage](https://localforage.github.io/localForage/), which uses IndexedDB with an automatic localStorage fallback. It works with zero configuration, no authentication, and no network access.
+
+### Storage Keys
+
+Two separate localforage instances are created under the `flujo` database name:
+
+| Instance | Store name | Keys |
+|---|---|---|
+| `store` | `main` | `flujo:diagrams` → `Diagram[]` |
+| `store` | `main` | `flujo:folders` → `Folder[]` |
+| `store` | `main` | `flujo:projects` → `Project[]` |
+| `store` | `main` | `flujo:preferences` → `UserPreferences` |
+| `thumbStore` | `thumbnails` | `<diagramId>` → data URL string |
+| `thumbStore` | `thumbnails` | `subproc:<parentId>:<elementId>` → data URL string |
+
+Thumbnails are kept in a separate localforage instance to keep the main diagram list lean — loading `flujo:diagrams` does not load thumbnail bytes.
+
+### Concurrency model
+
+`LocalRepository` is single-device and single-user, so **optimistic CAS is a no-op** — the `expectedUpdatedAt` parameter is accepted but ignored. There is no concurrency to protect against locally.
+
+```typescript
+// expectedUpdatedAt is ignored in local mode — single device, no concurrency
+async save(diagram: Diagram, _expectedUpdatedAt?: string): Promise<string> {
+  const all = await this.readDiagramsRaw()
+  const idx = all.findIndex((d) => d.id === diagram.id)
+  if (idx >= 0) {
+    all[idx] = diagram
+  } else {
+    all.push(diagram)
+  }
+  await store.setItem('flujo:diagrams', all)
+  return diagram.updatedAt
+}
+```
+
+---
+
+## SupabaseRepository
+
+`SupabaseRepository` implements `IDiagramRepository` against a Supabase project (PostgreSQL + Storage). Preferences are an exception — they are always stored locally via a delegated `LocalRepository` instance, as preferences are per-device by design.
+
+### Database Tables
+
+| Table | Description |
+|---|---|
+| `profiles` | User profile data synced from `auth.users` via trigger |
+| `folders` | Diagram folders, scoped to `owner_id` |
+| `diagrams` | Primary diagram table with `current_xml`, `thumbnail_path`, `element_count` |
+| `diagram_collaborators` | Per-diagram role grants (`owner`, `editor`, `viewer`) |
+| `diagram_invites` | Invite tokens for sharing diagrams |
+| `projects` | Project groups, scoped to `owner_id` |
+| `project_collaborators` | Per-project role grants |
+| `project_invites` | Invite tokens for sharing projects |
+
+### Row Level Security (RLS)
+
+All tables have RLS enabled. Access is enforced by helper functions defined in the database:
+
+```sql
+-- Helper functions (security definer — break RLS recursion)
+public.can_access_diagram(d_id uuid)  → bool  -- owner OR collaborator
+public.can_edit_diagram(d_id uuid)    → bool  -- owner OR editor/owner collaborator
+public.is_diagram_owner(d_id uuid)    → bool  -- owner only
+```
+
+Key policies:
+- `diagrams` SELECT: `can_access_diagram(id)` — collaborators can read
+- `diagrams` UPDATE: `can_edit_diagram(id)` — only editors/owners can write
+- `diagrams` DELETE: `owner_id = auth.uid()` — only the owner can permanently delete
+- `folders` ALL: `owner_id = auth.uid()` — private to owner
+
+### Storage Buckets
+
+| Bucket | Contents | Path pattern |
+|---|---|---|
+| `thumbnails` | Diagram thumbnail images | `<diagramId>/thumb` |
+| `thumbnails` | Sub-process thumbnails | `<parentId>/subproc/<elementId>` |
+| `diagram-images` | Library images | `<scopeId>/imglib/<uuid>.<ext>` |
+
+### Performance Optimisation: List Without XML
+
+A critical performance decision: `getAll()` **never fetches `current_xml`**. The XML column can be hundreds of kilobytes, and fetching it for a list of 100+ diagrams would transfer tens of megabytes on every app load.
+
+```typescript
+// Columns used for list view — current_xml is intentionally absent
+private static readonly LIST_COLUMNS =
+  'id, owner_id, folder_id, name, element_count, thumbnail_path, ' +
+  'schema_version, parent_diagram_id, sub_process_element_id, ' +
+  'project_id, created_at, updated_at, deleted_at'
+```
+
+The `xml` field in returned `Diagram` objects is an empty string for list responses. It is hydrated on demand when a diagram is opened via `diagramStore.ensureXml(id)`, which calls `getById(id)` and caches the result.
+
+---
+
+## Optimistic CAS: Save Conflict Handling
+
+When multiple users (or multiple browser tabs) edit the same diagram, save operations can conflict. `SupabaseRepository.save()` implements optimistic concurrency control using the `updated_at` timestamp as a version token.
+
+<Tabs>
+  <Tab title="How CAS works">
+    Every save includes the `updated_at` value the client loaded. The database trigger `diagrams_set_updated_at` automatically sets `updated_at = now()` on every UPDATE. If the `updated_at` in the database no longer matches what the client sent, zero rows are affected and `DiagramConflictError` is thrown.
+
+    ```typescript
+    // SupabaseRepository.save() — simplified
+    let q = this.sb
+      .from('diagrams')
+      .update({ name, current_xml, element_count, ... })
+      .eq('id', diagram.id)
+
+    // Optimistic lock: only update if our version is still current
+    if (expectedUpdatedAt) q = q.eq('updated_at', expectedUpdatedAt)
+
+    const { data } = await q.select('updated_at').maybeSingle()
+    if (!data && expectedUpdatedAt) throw new DiagramConflictError(diagram.id)
+
+    // Return server-authoritative updated_at for caller to adopt
+    return data.updated_at
+    ```
+  </Tab>
+  <Tab title="Conflict resolution in diagramStore">
+    `diagramStore.saveDiagram()` catches `DiagramConflictError` and attempts resolution with two retries before escalating to the user:
+
+    ```typescript
+    try {
+      persistedUpdatedAt = await diagramRepository.save(updated, diagram.updatedAt)
+    } catch (e) {
+      if (!(e instanceof DiagramConflictError)) throw e
+
+      // Attempt 1: re-fetch and check for content equality
+      const fresh = await diagramRepository.getById(id)
+      if (!fresh) return // deleted by another user
+      if (fresh.xml === xml) {
+        // Server already has this content — adopt version, done
+        adoptPersisted(fresh.updatedAt)
+        return
+      }
+
+      // Attempt 2: retry with fresh updated_at
+      try {
+        persistedUpdatedAt = await diagramRepository.save(updated, fresh.updatedAt)
+      } catch (e2) {
+        if (!(e2 instanceof DiagramConflictError)) throw e2
+        // Persistent divergence: notify UI via custom DOM event
+        document.dispatchEvent(
+          new CustomEvent('flujo:save-conflict', { detail: { id } })
+        )
+        return
+      }
+    }
+    ```
+  </Tab>
+  <Tab title="Rename safety">
+    Renaming a diagram uses a dedicated `setDiagramName()` call, never `save()`. This is a critical correctness rule:
+
+    ```typescript
+    // ✅ Correct: targeted update, no XML involved, CAS-safe
+    await diagramRepository.setDiagramName(id, name)
+
+    // ❌ Wrong: save() writes the in-memory XML without CAS
+    // If XML is stale (e.g. another editor is active),
+    // this silently clobbers their work
+    await diagramRepository.save({ ...diagram, name })
+    ```
+
+    The same principle applies to `setDiagramProject()` — always use the targeted method.
+  </Tab>
+</Tabs>
+
+### Thumbnail CAS
+
+Saving a thumbnail can also bump `updated_at` (the first time `thumbnail_path` is set for a diagram, the row is updated and the trigger fires). `saveThumbnail()` returns the new `updated_at` if this happened:
+
+```typescript
+const bumped = await diagramRepository.saveThumbnail(id, thumbnail ?? '')
+if (bumped) persistedUpdatedAt = bumped
+```
+
+The caller **must** adopt this value as the new CAS token. Ignoring it would leave the client with a stale version and cause phantom conflicts on the next save.
+
+---
+
+## Auto-Save: useAutoSave Hook
+
+The `useAutoSave` hook (`/src/hooks/useAutoSave.ts`) drives automatic persistence. It listens for the `unsavedChanges` flag in `uiStore` and schedules a save.
+
+```typescript
+export function useAutoSave(
+  getXml: () => Promise<string>,
+  getSvg: () => Promise<string>,
+  getThumbCrop?: () => CropRect | null,
+  intervalSeconds = 20
+)
+```
+
+### Save timing
+
+| Trigger | Delay |
+|---|---|
+| Continuous editing (typing labels, moving elements) | `intervalSeconds` + 0–5 s jitter |
+| Tab becomes active with unsaved changes | Same debounce applies |
+| Import, create element, delete element | Immediate (external callers set `unsavedChanges = true` then the timer fires) |
+
+The **0–5 second random jitter** is an important correctness feature: in real-time collaboration, all editors receive the same remote events simultaneously. Without jitter, their auto-save timers would fire at the same instant, causing every pair of saves to conflict via CAS. Jitter de-correlates the timers.
+
+### Save guards
+
+The hook performs three checks before saving:
+
+```typescript
+const save = async () => {
+  const id = useDiagramStore.getState().activeTabId
+  const dirty = useUIStore.getState().unsavedChanges
+  if (!id || !dirty) return
+
+  // Guard 1: viewer role — never write
+  if (!useCollabStore.getState().canEdit(id)) return
+
+  // Guard 2: canvas fencing — canvas may still show the previous diagram
+  // during a tab switch; saving now would persist the wrong content under the
+  // new tab's ID
+  if (!isCanvasReadyFor(id)) return
+
+  const [xml, thumbnail] = await Promise.all([
+    getXml(),
+    buildThumbnail(getSvg, getThumbCrop).catch(() => null),
+  ])
+  await saveDiagram(id, xml, undefined, thumbnail)
+  setUnsavedChanges(false)
+}
+```
+
+### Save serialization
+
+`diagramStore` maintains a `saveChain` promise that serializes all save operations from the same client:
+
+```typescript
+let saveChain: Promise<unknown> = Promise.resolve()
+
+// Each save is appended to the chain, so they run in sequence
+const task = saveChain.then(run, run)
+saveChain = task.catch(() => {})
+return task
+```
+
+This prevents two saves from the same client from racing each other and self-conflicting via CAS.
+
+### Status bar states
+
+The `StatusBar` component reads `uiStore.unsavedChanges` and `diagramStore.lastSavedAt`:
+
+| State | Display |
+|---|---|
+| `unsavedChanges = false` | ● Saved |
+| `unsavedChanges = true` (save pending) | ● Unsaved changes |
+| Save in progress | ● Saving… |
+
+---
+
+## Soft Delete and Trash
+
+All destructive operations are two-phase. The first phase is recoverable (soft delete); the second is permanent (purge).
+
+<AccordionGroup>
+  <Accordion title="delete(id) — move to trash">
+    Sets `deleted_at` to the current timestamp. The diagram is excluded from `getAll()` results but is still in the database. Thumbnails and linked images are preserved so they can be shown in the trash UI and restored.
+
+    ```typescript
+    // LocalRepository
+    async delete(id: string): Promise<void> {
+      const now = new Date().toISOString()
+      const all = await this.readDiagramsRaw()
+      await store.setItem(
+        'flujo:diagrams',
+        all.map((d) => (d.id === id ? { ...d, deletedAt: now } : d))
+      )
+    }
+
+    // SupabaseRepository
+    async delete(id: string): Promise<void> {
+      const { error } = await this.sb
+        .from('diagrams')
+        .update({ deleted_at: new Date().toISOString() })
+        .eq('id', id)
+      if (error) throw error
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="restore(id) — remove from trash">
+    Clears `deleted_at` (sets to `null`). The diagram reappears in `getAll()` results.
+
+    ```typescript
+    // Both implementations: set deleted_at = null
+    async restore(id: string): Promise<void>
+    ```
+  </Accordion>
+
+  <Accordion title="purge(id) — permanent delete">
+    Performs a real `DELETE`. Thumbnails are also removed from Storage (or thumbStore in local mode). **This operation is irreversible.**
+
+    In `SupabaseRepository`, the `parent_diagram_id` foreign key has `ON DELETE CASCADE`, so purging a parent diagram automatically purges all its sub-process descendants.
+
+    ```typescript
+    // SupabaseRepository
+    async purge(id: string): Promise<void> {
+      const { error } = await this.sb.from('diagrams').delete().eq('id', id)
+      if (error) throw error
+      // Remove thumbnail from Storage
+      await this.sb.storage.from(THUMB_BUCKET).remove([thumbPath(id)])
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="getTrash() — read trash contents">
+    Returns all diagrams and projects where `deleted_at IS NOT NULL`, ordered by deletion time (most recent first).
+
+    ```typescript
+    async getTrash(): Promise<{ diagrams: Diagram[]; projects: Project[] }>
+    ```
+  </Accordion>
+
+  <Accordion title="purgeAll() — empty trash">
+    Permanently deletes every item with `deleted_at` set, across both diagrams and projects. In `SupabaseRepository`, thumbnail objects are batch-deleted from Storage.
+
+    ```typescript
+    async purgeAll(): Promise<void>
+    ```
+  </Accordion>
+
+  <Accordion title="deleteWithChildren(id) — recursive soft delete">
+    Soft-deletes a diagram and all its sub-process diagrams (diagrams where `parentDiagramId` equals this ID, recursively). Used when deleting a top-level diagram that has expanded sub-processes.
+
+    In `LocalRepository`, the recursion is done client-side by traversing the in-memory diagram array. In `SupabaseRepository`, the `parent_diagram_id ON DELETE CASCADE` foreign key handles cascaded **purges** automatically, but soft deletes are done with a single UPDATE scoped to the direct parent.
+  </Accordion>
+</AccordionGroup>
+
+### Project-level trash
+
+Deleting a project soft-deletes both the project record and all its diagrams in a single operation. Restoring a project restores all its diagrams. Purging a project purges all its diagrams.
+
+```typescript
+// deleteProject: soft-deletes project + all its diagrams together
+async deleteProject(id: string): Promise<void>
+
+// restoreProject: restores project + all its diagrams
+async restoreProject(id: string): Promise<void>
+
+// purgeProject: permanent delete of project + all its diagrams + thumbnails
+async purgeProject(id: string): Promise<void>
+```
+
+---
+
+## Adding a New Backend
+
+The repository pattern makes new storage backends straightforward:
+
+<Steps>
+  <Step title="Create the implementation">
+    Create a new class in `/src/persistence/` that implements `IDiagramRepository` (and `IImageRepository` if needed):
+
+    ```typescript
+    // /src/persistence/MyApiRepository.ts
+    import type { IDiagramRepository } from './IDiagramRepository'
+
+    export class MyApiRepository implements IDiagramRepository {
+      async getAll(): Promise<Diagram[]> { ... }
+      async save(diagram: Diagram, expectedUpdatedAt?: string): Promise<string> { ... }
+      // ... all required methods
+    }
+    ```
+  </Step>
+  <Step title="Update the binding">
+    Change only `/src/persistence/index.ts`:
+
+    ```typescript
+    import { MyApiRepository } from './MyApiRepository'
+
+    export const diagramRepository: IDiagramRepository = new MyApiRepository()
+    ```
+  </Step>
+  <Step title="Done">
+    Zero changes to stores, hooks, or components. The type system enforces that your implementation satisfies the full `IDiagramRepository` contract at compile time.
+  </Step>
+</Steps>

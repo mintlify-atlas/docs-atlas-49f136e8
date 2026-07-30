@@ -1,72 +1,94 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mintlify Starter Kit",
+  "name": "MC Modeler",
+  "theme": "willow",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#6f53ee",
+    "light": "#b4a4f4",
+    "dark": "#6f53ee"
   },
-  "favicon": "/favicon.svg",
-  "navigation": {
-    "pages": [
-      {
-        "group": "Getting Started",
-        "pages": [
-          "index",
-          "quickstart"
-        ]
-      }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
+  "favicon": "https://media.brand.dev/835c1eb4-37ef-472e-9131-3cb8ca746944.svg",
   "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
     "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://app.mintlify.com"
+      "type": "github",
+      "href": "https://github.com/Aston2710/mc-modeler"
     }
-  },
-  "contextual": {
-    "options": [
-      "copy",
-      "view",
-      "chatgpt",
-      "claude",
-      "perplexity",
-      "mcp",
-      "cursor",
-      "vscode"
-    ]
   },
   "footer": {
     "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
+      "github": "https://github.com/Aston2710/mc-modeler"
     }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "self-hosting"
+            ]
+          },
+          {
+            "group": "Core Features",
+            "pages": [
+              "features/canvas",
+              "features/bpmn-elements",
+              "features/properties-panel",
+              "features/export-import"
+            ]
+          },
+          {
+            "group": "Collaboration",
+            "pages": [
+              "collaboration/overview",
+              "collaboration/sharing",
+              "collaboration/comments",
+              "collaboration/presence"
+            ]
+          },
+          {
+            "group": "Projects & Organization",
+            "pages": [
+              "organization/projects",
+              "organization/diagrams",
+              "organization/image-library"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/supabase-setup",
+              "configuration/preferences",
+              "configuration/keyboard-shortcuts"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Architecture",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "architecture/overview",
+              "architecture/data-model",
+              "architecture/persistence"
+            ]
+          },
+          {
+            "group": "Modules",
+            "pages": [
+              "architecture/bpmn-engine",
+              "architecture/collab-sync",
+              "architecture/validation"
+            ]
+          }
+        ]
+      }
+    ]
   }
 }

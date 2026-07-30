@@ -1,0 +1,157 @@
+---
+title: "Real-Time Collaboration Overview — MC Modeler"
+sidebarTitle: "Overview"
+description: "How MC Modeler's Supabase Realtime + Yjs CRDT collaboration works: roles, channels, data flows, concurrency control, and auth."
+---
+
+MC Modeler supports real-time multi-user editing on every BPMN diagram. When a Supabase backend is configured, any number of collaborators can edit the same diagram simultaneously — changes propagate in milliseconds and conflicts are resolved automatically via a CRDT. Without Supabase, the app runs in **local-only mode** and none of the collaboration features described in this section are available.
+
+<Note>
+  Collaboration requires a configured Supabase project. See the [Supabase Setup](/configuration/supabase-setup) guide to connect your backend before inviting collaborators.
+</Note>
+
+## Local-only mode vs. collaborative mode
+
+| Capability | Local-only | With Supabase |
+|---|---|---|
+| Create and edit diagrams | ✅ | ✅ |
+| Autosave to browser storage | ✅ | ✅ |
+| Real-time co-editing | ❌ | ✅ |
+| Presence avatars and cursors | ❌ | ✅ |
+| Comments and @mentions | ❌ | ✅ |
+| Shareable invite links | ❌ | ✅ |
+| Role-based access control | ❌ | ✅ |
+
+In local-only mode the `isSupabaseConfigured` flag is `false` and `canEdit()` always returns `true` — there are no permission checks to enforce.
+
+## Role system
+
+Every collaborator on a diagram holds one of three roles. Roles are stored in the `diagram_collaborators` table and enforced by Supabase Row Level Security (RLS) on every query.
+
+| Role | Permissions |
+|---|---|
+| **owner** | Full control — edit, share, delete, manage collaborators |
+| **editor** | Edit the diagram, add and reply to comments |
+| **viewer** | Read-only — view the diagram, add and reply to comments |
+
+### Diagram roles vs. project roles
+
+Roles can be granted at two levels:
+
+- **Diagram level** — stored in `diagram_collaborators`, applies to one diagram.
+- **Project level** — stored in `project_collaborators`, applies to every diagram in the project.
+
+When a user has both a direct diagram role and an inherited project role, the **most permissive role wins**. The rank used for comparison is `viewer < editor < owner`.
+
+```ts
+// src/store/collabStore.ts
+const RANK: Record<CollaboratorRole, number> = { viewer: 1, editor: 2, owner: 3 }
+
+function effectiveRole(diagramId, rolesByDiagram, rolesByProject) {
+  const direct    = rolesByDiagram[diagramId] ?? null
+  const inherited = projectRoleForDiagram(diagramId, rolesByProject)
+  if (direct && inherited)
+    return RANK[direct] >= RANK[inherited] ? direct : inherited
+  return direct ?? inherited
+}
+```
+
+The effective role is exposed through `useCollabStore`:
+
+```ts
+const role    = useCollabStore((s) => s.roleFor(diagramId))   // effective role
+const canEdit = useCollabStore((s) => s.canEdit(diagramId))   // true for owner/editor
+const isOwner = useCollabStore((s) => s.isOwner(diagramId))   // true for owner only
+```
+
+## The collaboration channel
+
+Each open diagram joins a single **Supabase Realtime channel** named `diagram:{diagramId}`. The `CollabChannel` class manages the lifecycle of this channel.
+
+```ts
+// src/collab/SupabaseProvider.ts
+const channel = supabase.channel(`diagram:${this.diagramId}`, {
+  config: {
+    presence: { key: this.me.userId },
+    broadcast: { self: false },
+  },
+})
+```
+
+Three types of data flow through the channel simultaneously:
+
+```
+┌──────────────────────────────────────────────────┐
+│        diagram:{diagramId}   (Realtime channel)  │
+│                                                   │
+│  presence  ── who is online (ParticipantMeta)    │
+│  broadcast 'cursor' ── live cursor positions     │
+│  broadcast 'yjs'    ── CRDT update deltas        │
+│  broadcast 'yjs-sv' ── state vectors (anti-entropy) │
+└──────────────────────────────────────────────────┘
+```
+
+### Presence sync
+
+Each participant tracks their `ParticipantMeta` (`userId`, `name`, `color`) in the presence slot. When any participant joins or leaves, a `presence sync` event fires and the `onPresence` handler updates the list of participants shown in [Presence Avatars](/collaboration/presence).
+
+### Cursor broadcast
+
+Cursor positions are sent as `broadcast` events (not presence) for lower latency. Coordinates are expressed in **diagram space** (not screen pixels) so they remain accurate regardless of each user's zoom level or viewport position.
+
+### Yjs CRDT update broadcast
+
+All structural edits to the diagram are encoded as Yjs binary updates and broadcast to peers as base64 strings. The `YjsBpmnBinding` class maintains a bidirectional binding between the bpmn-js canvas and a `Y.Doc`:
+
+- **Local → Y:** on `commandStack.changed`, diffs the current canvas snapshots against the last known state and writes changes into `Y.Map('elements')`.
+- **Y → Local:** observes `Y.Map('elements')`; applies incoming remote changes to the canvas via the bpmn-js modeling API while suppressing re-emission.
+
+To avoid saturating Supabase Realtime's rate limits during rapid drag operations, outgoing updates are coalesced into 150 ms windows before broadcast (`BROADCAST_COALESCE_MS = 150`).
+
+### Anti-entropy
+
+Because Supabase Realtime `broadcast` is fire-and-forget, a single dropped message would cause permanent divergence for that session. Every 20 seconds (`ANTIENTROPY_INTERVAL_MS = 20000`) each client:
+
+1. Publishes its own Yjs state vector (`yjs-sv` event).
+2. Any peer that receives the vector responds with the exact diff it has that the sender lacks (`diffForPeer`).
+
+This guarantees convergence even when individual broadcast messages are lost.
+
+## Optimistic concurrency control
+
+Saving a diagram uses **compare-and-swap (CAS)**: the save request includes `expectedUpdatedAt` (the timestamp of the version the client last loaded). If another user saved in between, the server detects the mismatch and throws a `DiagramConflictError`. The conflict dialog then lets the user choose between loading the server version or saving a duplicate copy.
+
+```json
+// en.json — conflict dialog strings
+{
+  "conflict": {
+    "title": "Diagram changed on the server",
+    "message": "Another user saved \"{{name}}\" while you were editing an outdated version.",
+    "reload": "Load server version",
+    "saveCopy": "Save my copy as duplicate"
+  }
+}
+```
+
+## Authentication
+
+MC Modeler uses **Supabase Auth** for identity. Two sign-in methods are supported:
+
+- **Magic link (email)** — sends a one-time sign-in link to the user's inbox.
+- **Google OAuth** — one-click sign-in via a Google account.
+
+The authenticated user's `id` is used as the `userId` in `ParticipantMeta`, as the presence key in the Realtime channel, and as the subject of all RLS policies.
+
+---
+
+<CardGroup cols={3}>
+  <Card title="Sharing & Access Control" icon="user-plus" href="/collaboration/sharing">
+    Invite collaborators, manage roles, and generate shareable links.
+  </Card>
+  <Card title="Comments & Mentions" icon="message-square" href="/collaboration/comments">
+    Threaded comments anchored to diagram elements with @mention notifications.
+  </Card>
+  <Card title="Presence & Live Cursors" icon="mouse-pointer" href="/collaboration/presence">
+    See who's online and watch their cursors move in real time.
+  </Card>
+</CardGroup>

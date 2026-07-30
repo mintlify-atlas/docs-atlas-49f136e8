@@ -1,0 +1,219 @@
+---
+title: "Properties Panel: Edit BPMN Element Attributes"
+sidebarTitle: "Properties Panel"
+description: "Learn how to use the MC Modeler properties panel to edit names, documentation, task types, event definitions, and image badges for any BPMN element."
+---
+
+The properties panel is the right-side pane of the MC Modeler editor. Select any BPMN element on the canvas and the panel immediately populates with that element's editable attributes. Every change you make is applied to the canvas in **real time** — there is no save button in the panel itself; the diagram auto-saves in the background.
+
+## Opening and Closing the Panel
+
+<Steps>
+  <Step title="Open by selecting an element">
+    Click any element on the canvas. The properties panel opens automatically and shows that element's attributes.
+  </Step>
+  <Step title="Toggle with the collapse button">
+    Click the **▷** button on the panel's left edge to collapse it, freeing up canvas space. Click **◁** to re-expand it. The toggle state is reflected in `UIState.propertiesPanelOpen`.
+  </Step>
+  <Step title="No-selection state">
+    When nothing is selected on the canvas, the panel displays a subtle centered message: **"Select an element"** (`RF-02.4`). No fields are shown.
+  </Step>
+</Steps>
+
+<Tip>
+  You can collapse the properties panel together with the palette panel to work in a full-canvas mode — useful for large diagrams or when presenting to stakeholders.
+</Tip>
+
+---
+
+## Panel Header
+
+When an element is selected, the panel header shows:
+
+| Area | Content |
+|---|---|
+| **Type icon** | Colored square icon matching the BPMN element category (blue for tasks, green/red for events, yellow for gateways) |
+| **Type label** | Uppercase label of the exact element type, e.g., `USER TASK`, `EXCLUSIVE GATEWAY` |
+| **Name** | The element's current name in bold — click to edit inline |
+| **ID** | The auto-generated immutable ID in monospaced font, e.g., `Task_3f2a1b` |
+
+---
+
+## Common Properties (All Elements)
+
+Every BPMN element exposes these three properties regardless of type:
+
+<CardGroup cols={3}>
+  <Card title="ID" icon="fingerprint">
+    **Read-only.** Auto-generated on element creation in the format `{Type}_{shortUUID}`. Used internally to link flows, boundary events, and cross-references. Never editable by the user.
+  </Card>
+  <Card title="Name" icon="pen-line">
+    **Editable text field.** Displayed as the element's label on the canvas. Optional on all elements except pools (where it is strongly recommended). Changes appear on the canvas character by character as you type.
+  </Card>
+  <Card title="Documentation" icon="file-text">
+    **Editable long-text area.** Free-form notes or descriptions attached to the element. Stored as `bpmn:documentation` in the exported XML, so the content is preserved when opening the file in Bizagi or Camunda.
+  </Card>
+</CardGroup>
+
+The panel organizes these into two tabs visible at the top of the properties area:
+
+- **General** — ID, Name, and element-specific fields (see below).
+- **Documentation** — The full-width `documentation` text area.
+
+---
+
+## Element-Specific Properties
+
+### Tasks
+
+When a task is selected, the General tab shows a **Task type** dropdown that lets you morph the element into any task sub-type without deleting and recreating it:
+
+| Task type | BPMN type | Icon marker |
+|---|---|---|
+| Generic task | `bpmn:Task` | _(none)_ |
+| User task | `bpmn:UserTask` | 👤 person silhouette |
+| Service task | `bpmn:ServiceTask` | ⚙ gear |
+| Script task | `bpmn:ScriptTask` | ≡ script lines |
+| Send task | `bpmn:SendTask` | ✉ filled envelope |
+| Receive task | `bpmn:ReceiveTask` | ✉ empty envelope |
+| Business rule task | `bpmn:BusinessRuleTask` | 🏛 table grid |
+
+<Note>
+  Changing the task type in the properties panel is equivalent to using the **morph** option in the context pad. Both update the `bpmnType` stored in the XML immediately.
+</Note>
+
+---
+
+### Events
+
+For start, intermediate, and end events, the panel exposes an **Event definition type** selector that attaches or changes the `bpmn:EventDefinition` child element:
+
+<Tabs>
+  <Tab title="Start events">
+    | Event definition | Description |
+    |---|---|
+    | None | Plain start — no trigger |
+    | Timer | `bpmn:TimerEventDefinition` — time-based trigger |
+    | Message | `bpmn:MessageEventDefinition` — receives a message |
+    | Signal | `bpmn:SignalEventDefinition` — receives a broadcast signal |
+    | Conditional | `bpmn:ConditionalEventDefinition` — condition becomes true |
+  </Tab>
+  <Tab title="Intermediate events">
+    | Event definition | Description |
+    |---|---|
+    | None | Plain intermediate catch event |
+    | Message | `bpmn:MessageEventDefinition` — waiting to receive a message |
+    | Timer | `bpmn:TimerEventDefinition` — waiting for a time trigger |
+  </Tab>
+  <Tab title="End events">
+    | Event definition | Description |
+    |---|---|
+    | None | Normal end |
+    | Message | `bpmn:MessageEventDefinition` — sends a message on completion |
+    | Error | `bpmn:ErrorEventDefinition` — throws an error |
+    | Terminate | `bpmn:TerminateEventDefinition` — ends the entire process instance |
+  </Tab>
+</Tabs>
+
+---
+
+### Gateways
+
+For gateways the panel shows a **read-only Gateway type indicator** confirming the current type (Exclusive XOR, Parallel AND, Inclusive OR, Event-based, Complex). To change the gateway type, use the **Change type** option in the context pad — this prevents accidental type swaps, since the routing semantics differ significantly between gateway types.
+
+---
+
+### Pools and Lanes
+
+| Property | Behavior |
+|---|---|
+| **Name** | The pool or lane label displayed in the header strip. Edited inline. Required for pools that represent named participants. |
+| **Documentation** | Free-form notes. |
+
+Lanes have no additional properties beyond name and documentation. Pool boundaries and lane boundaries are resized directly on the canvas by dragging the edge handles.
+
+---
+
+### Sub-processes
+
+<CardGroup cols={2}>
+  <Card title="Collapsed / Expanded toggle" icon="toggle-left">
+    Switch between the collapsed view (small task with **+** icon) and the expanded inline view. When expanding, the sub-process grows to its expanded default size (90 × 60 px base, then resizable).
+  </Card>
+  <Card title="Linked sub-diagram" icon="link">
+    A sub-process can optionally link to a separate diagram stored in the project. This lets you navigate into the detail diagram from the parent canvas. The link stores the `parentDiagramId` and `subProcessElementId` reference in the `Diagram` metadata.
+  </Card>
+</CardGroup>
+
+---
+
+## Image Badge Feature
+
+Any flow element (task, event, gateway, etc.) can have one or more **library images** attached to it as a visual badge. The badge is rendered directly on the element in the canvas by `ImageBadgeModule`.
+
+<Steps>
+  <Step title="Open the image picker">
+    Select an element on the canvas. In the context pad, click the image-link icon (or use the **Link image** button in the properties panel). This opens the **Image Picker** modal.
+  </Step>
+  <Step title="Choose an image from the library">
+    Browse or search your image library. Select the desired image. The link is stored in the element's `flujo:linkedImages` extension attribute in the BPMN XML — image bytes are never embedded directly in the element.
+  </Step>
+  <Step title="Badge appears on canvas">
+    The selected image appears as a small badge overlay on the element. Multiple images can be linked to the same element.
+  </Step>
+  <Step title="Remove a badge">
+    Click the badge in the canvas (or in the properties panel's image section) and select **Unlink** from the context pad to remove the association.
+  </Step>
+</Steps>
+
+<Info>
+  Images are stored by reference (`storage://diagram-images/...` in cloud mode, `local://<id>` in local mode). The BPMN XML file stores only the image ID, keeping the diagram file lightweight. When exporting to `.bpmn` or `.bpm`, the `inlineImages` utility resolves references to base64 data URLs so the exported file is self-contained.
+</Info>
+
+---
+
+## Real-Time Synchronization
+
+Every field change in the properties panel is applied instantly:
+
+```
+User types in the Name field
+        │
+        ▼
+Panel component calls modeler action
+        │
+        ▼
+bpmn-js updates the business object
+        │
+        ▼
+Canvas re-renders the element label
+        │
+        ▼
+Auto-save debounce timer resets (2 s)
+```
+
+There is no "Apply" or "Save" button in the panel. The status bar shows the unsaved-changes indicator until the auto-save fires, or until you press `Ctrl+S`.
+
+---
+
+## Panel Layout Reference
+
+```
+┌─────────────────────────────────────┐
+│ [🟦 ICON]  USER TASK            [▷] │  ← header with collapse button
+│            Approve Invoice           │
+│            Task_3f2a1b (mono)        │
+├──────────────┬──────────────────────┤
+│  General ▶  │  Documentation        │  ← tabs
+├─────────────────────────────────────┤
+│  IDENTITY                           │  ← section label (uppercase)
+│  Name  [Approve Invoice         ]   │
+│  ID    [Task_3f2a1b            ]   │  ← read-only
+├─────────────────────────────────────┤
+│  TYPE                               │
+│  Task type  [User task ▼          ] │  ← dropdown
+├─────────────────────────────────────┤
+│  IMAGES                             │
+│  [🖼 badge1] [🖼 badge2]  [+ Link] │
+└─────────────────────────────────────┘
+```

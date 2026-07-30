@@ -1,0 +1,345 @@
+---
+title: "MC Modeler Architecture Overview for Developers"
+sidebarTitle: "Overview"
+description: "A complete map of MC Modeler's six-layer SPA architecture: tech stack, data flow, bpmn-js lifecycle, and directory structure."
+---
+
+MC Modeler is a **100% client-side Single Page Application** — there is no server-side rendering. This is a hard constraint: bpmn-js requires a real DOM to mount its canvas, making SSR impossible. Every feature, from state management to persistence, runs entirely in the browser.
+
+<Note>
+  The architecture is designed around one central rule: **XML lives in bpmn-js, not in Zustand.** The BPMN diagram is only extracted from the engine when it needs to be persisted or exported — never stored in React state.
+</Note>
+
+## Tech Stack
+
+<CardGroup cols={3}>
+  <Card title="React 19 + TypeScript" icon="react">
+    Functional components only. `strict: true` in tsconfig. No `any` types.
+  </Card>
+  <Card title="Vite 6" icon="bolt">
+    Build tool. Instant HMR in development, optimized production bundles.
+  </Card>
+  <Card title="bpmn-js v18" icon="diagram-project">
+    BPMN 2.0 engine by Camunda. Certified OMG-standard, MIT-licensed.
+  </Card>
+  <Card title="Zustand v5 + Immer" icon="database">
+    Global state management. Lightweight, no boilerplate, ideal for canvas state.
+  </Card>
+  <Card title="Tailwind CSS v4" icon="paintbrush">
+    Utility-first styling. No conflicts with bpmn-js's internal `.djs-*` classes.
+  </Card>
+  <Card title="Supabase + Yjs" icon="cloud">
+    Cloud backend for multi-user persistence. Yjs (CRDT) for real-time collaboration.
+  </Card>
+</CardGroup>
+
+**Full production dependency list** (from `package.json`):
+
+```json
+{
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "bpmn-js": "^18.15.0",
+    "@supabase/supabase-js": "^2.106.2",
+    "zustand": "^5.0.0",
+    "immer": "^11.1.4",
+    "localforage": "^1.10.0",
+    "yjs": "^13.6.31",
+    "zod": "^3.23.0",
+    "i18next": "^26.0.0",
+    "react-i18next": "^17.0.0",
+    "html-to-image": "^1.11.0",
+    "jspdf": "^4.2.1",
+    "jszip": "^3.10.1",
+    "lucide-react": "^0.460.0",
+    "clsx": "^2.1.0",
+    "tailwind-merge": "^2.5.0"
+  }
+}
+```
+
+---
+
+## Six Architectural Layers
+
+The codebase is divided into six layers with strict directional dependencies. Lower layers never import from higher ones.
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  1. Presentation   /src/components   React UI, no logic      │
+├──────────────────────────────────────────────────────────────┤
+│  2. Orchestration  /src/hooks        Connects UI ↔ engine    │
+├──────────────────────────────────────────────────────────────┤
+│  3. BPMN Engine    /src/bpmn         bpmn-js init & modules  │
+├──────────────────────────────────────────────────────────────┤
+│  4. State          /src/store        Zustand stores          │
+├──────────────────────────────────────────────────────────────┤
+│  5. Persistence    /src/persistence  Repository pattern      │
+├──────────────────────────────────────────────────────────────┤
+│  6. Domain         /src/domain       Pure TS types + rules   │
+└──────────────────────────────────────────────────────────────┘
+```
+
+<AccordionGroup>
+  <Accordion title="Layer 1 — Presentation (/src/components)">
+    React UI components. They contain **no business logic** and never access bpmn-js directly. Components read from Zustand stores and call store actions. They never import `localforage`, `IDiagramRepository`, or bpmn-js modules.
+
+    Sub-directories: `layout/`, `canvas/`, `palette/`, `properties/`, `diagrams/`, `modals/`, `ui/`.
+  </Accordion>
+
+  <Accordion title="Layer 2 — Orchestration (/src/hooks)">
+    Custom React hooks that wire the UI to both the bpmn-js engine and Zustand state. This is the **only** layer allowed to bridge these two systems.
+
+    Key hooks:
+    - `useBpmnModeler` — main integration point with the bpmn-js engine (import, export, undo/redo, zoom, element manipulation)
+    - `useAutoSave` — debounced persistence triggered by canvas changes
+    - `useExport` — PDF, PNG, SVG export logic
+    - `useKeyboard` — global keyboard shortcuts
+    - `useValidation` — BPMN validation rules
+  </Accordion>
+
+  <Accordion title="Layer 3 — BPMN Engine (/src/bpmn)">
+    Everything bpmn-js-specific: initialization configuration, custom modules (palette, renderer, context pad), and event adapters that translate bpmn-js events into Zustand actions.
+
+    This is as close to bpmn-js internals as the codebase gets. **No other layer imports bpmn-js directly.**
+
+    - `config.ts` — modeler options and custom module declarations
+    - `modules/CustomPalette.ts` — categorized element palette
+    - `modules/CustomRenderer.ts` — custom visual styles
+    - `modules/CustomContextPad.ts` — right-click/hover element menu
+    - `adapters/eventAdapter.ts` — bpmn-js events → store actions
+  </Accordion>
+
+  <Accordion title="Layer 4 — State (/src/store)">
+    Zustand stores using the Immer middleware for immutable updates. State is split across focused stores:
+
+    | Store | Responsibility |
+    |---|---|
+    | `diagramStore` | Diagram list, tabs, active diagram, projects, trash |
+    | `uiStore` | Panel visibility, modals, toasts, zoom, selected elements |
+    | `preferencesStore` | Language, theme, grid settings, palette mode |
+    | `collabStore` | Real-time collaboration session state |
+    | `commentStore` | Inline diagram comments |
+    | `notificationStore` | In-app notification inbox |
+    | `authStore` | Supabase authentication session |
+    | `imageStore` | Image library management |
+    | `presenceStore` | Collaborator cursor/presence state |
+
+    <Warning>
+      Never pass an entire Zustand store as a prop. Always select only the specific slice your component needs. This prevents unnecessary re-renders.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="Layer 5 — Persistence (/src/persistence)">
+    The repository pattern abstracts all storage behind `IDiagramRepository`. No store, hook, or component imports `localforage` directly or references `LocalRepository`/`SupabaseRepository` by name. Everything goes through `diagramRepository` exported from `/src/persistence/index.ts`.
+
+    Two implementations exist: `LocalRepository` (IndexedDB, offline) and `SupabaseRepository` (cloud). The binding is decided at startup by a single `isSupabaseConfigured` check.
+  </Accordion>
+
+  <Accordion title="Layer 6 — Domain (/src/domain)">
+    Pure TypeScript: interface definitions, type aliases, and validation logic. No dependencies on React, bpmn-js, or any runtime library. This layer can be tested in isolation with zero setup.
+
+    - `types.ts` — all domain interfaces
+    - `validation.ts` — BPMN business rule validators
+    - `bpmnElements.ts` — catalogue of all supported BPMN elements
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Data Flow
+
+Every user interaction follows the same path through the layers:
+
+```
+User action (click, drag, keyboard)
+        │
+        ▼
+React Component  (/src/components)
+        │  calls
+        ▼
+Custom Hook  (/src/hooks)
+        │  coordinates
+        ├────────────────────────────┐
+        ▼                            ▼
+bpmn-js Engine               Zustand Store
+(manipulates canvas)         (updates UI state)
+        │                            │
+        ▼                            ▼
+bpmn-js event            Components re-render
+        │
+        ▼
+Event Adapter  (bpmn event → store action)
+        │
+        ▼
+Zustand Store updated
+        │
+        ▼  (on changes, debounced)
+IDiagramRepository.save()
+        │
+        ├── LocalRepository (IndexedDB)
+        └── SupabaseRepository (Postgres + Storage)
+```
+
+---
+
+## bpmn-js Lifecycle
+
+Understanding the engine lifecycle is critical for contributing to this codebase.
+
+<Steps>
+  <Step title="Single instance per session">
+    `BpmnModeler` is instantiated **once** per active editing session. The DOM container ref is passed at construction time. The instance is stored in `modelerRef` inside `useBpmnModeler`.
+  </Step>
+  <Step title="Switching diagrams uses importXML">
+    When the user opens a different diagram (tab change), `modeler.importXML(newXml)` is called on the existing instance. The modeler is **never destroyed and recreated** to switch diagrams — that would lose the undo stack and cause visible flash.
+  </Step>
+  <Step title="Optional per-tab cache">
+    When the tabs cache flag is enabled, each diagram gets its own modeler instance that is kept alive and re-attached to the DOM on tab switches. This preserves zoom level, selection, and undo history per tab without re-importing.
+  </Step>
+  <Step title="Cleanup on unmount">
+    When the editor component unmounts, `modeler.destroy()` is called (or `cacheDisposeAll()` if the cache is enabled). Event listeners are removed from `window` in the same cleanup.
+  </Step>
+</Steps>
+
+<Warning>
+  bpmn-js manipulates the DOM directly using its own module system (Didi injector). Do not wrap bpmn-js DOM nodes in React portals or controlled components. The `BpmnCanvas` component is an intentionally thin wrapper that only exposes a container `ref`.
+</Warning>
+
+<Tip>
+  When bpmn-js TypeScript types are incomplete (they often are), use `// @ts-ignore` with an explanatory comment. Never use it silently. Never reach for `any` across module boundaries.
+</Tip>
+
+---
+
+## Directory Structure
+
+```
+bpmn-web-modeler/
+├── public/
+│   ├── favicon.svg
+│   └── fonts/
+├── src/
+│   ├── main.tsx                  # Entry point
+│   ├── App.tsx                   # Root router and providers
+│   │
+│   ├── bpmn/                     # Everything bpmn-js related
+│   │   ├── config.ts             # Modeler configuration (modules, options)
+│   │   ├── modules/
+│   │   │   ├── CustomPalette.ts
+│   │   │   ├── CustomRenderer.ts
+│   │   │   └── CustomContextPad.ts
+│   │   ├── adapters/
+│   │   │   └── eventAdapter.ts   # bpmn-js events → store actions
+│   │   └── index.ts
+│   │
+│   ├── components/
+│   │   ├── layout/
+│   │   │   ├── AppLayout.tsx
+│   │   │   ├── Toolbar.tsx
+│   │   │   ├── StatusBar.tsx
+│   │   │   ├── PalettePanel.tsx
+│   │   │   └── PropertiesPanel.tsx
+│   │   ├── canvas/
+│   │   │   └── BpmnCanvas.tsx    # Thin DOM wrapper for bpmn-js
+│   │   ├── palette/
+│   │   ├── properties/
+│   │   ├── diagrams/
+│   │   ├── modals/
+│   │   └── ui/                   # shadcn/ui re-exports + custom primitives
+│   │
+│   ├── hooks/
+│   │   ├── useBpmnModeler.ts     # Primary bpmn-js integration hook
+│   │   ├── useAutoSave.ts        # Debounced persistence
+│   │   ├── useExport.ts
+│   │   ├── useKeyboard.ts
+│   │   └── useValidation.ts
+│   │
+│   ├── store/
+│   │   ├── diagramStore.ts       # Diagrams, tabs, projects, trash
+│   │   ├── uiStore.ts            # Panels, modals, zoom, toasts
+│   │   ├── preferencesStore.ts   # Language, theme, grid, palette mode
+│   │   ├── collabStore.ts        # Real-time session state
+│   │   ├── commentStore.ts
+│   │   ├── notificationStore.ts
+│   │   ├── authStore.ts
+│   │   ├── imageStore.ts
+│   │   └── presenceStore.ts
+│   │
+│   ├── persistence/
+│   │   ├── IDiagramRepository.ts  # Immutable interface contract
+│   │   ├── LocalRepository.ts     # IndexedDB implementation
+│   │   ├── SupabaseRepository.ts  # Cloud implementation
+│   │   ├── index.ts               # Single binding point
+│   │   ├── thumbnailService.ts
+│   │   └── migrations.ts
+│   │
+│   ├── domain/
+│   │   ├── types.ts              # All TypeScript domain interfaces
+│   │   ├── validation.ts         # Pure BPMN validation rules
+│   │   └── bpmnElements.ts       # Supported element catalogue
+│   │
+│   ├── i18n/
+│   │   ├── index.ts
+│   │   ├── es.json
+│   │   └── en.json
+│   │
+│   └── utils/
+│       ├── idGenerator.ts
+│       ├── dateFormatter.ts
+│       └── exportHelpers.ts
+│
+├── supabase/
+│   └── migrations/               # PostgreSQL schema migrations
+│
+├── tests/
+│   ├── unit/
+│   └── integration/
+│
+├── index.html
+├── vite.config.ts
+├── tailwind.config.ts
+├── tsconfig.json
+└── package.json
+```
+
+---
+
+## Key Design Rules
+
+These rules are enforced across the entire codebase and must be respected by contributors:
+
+<CardGroup cols={2}>
+  <Card title="XML stays in bpmn-js" icon="code">
+    BPMN XML is never stored in Zustand. It is extracted via `modeler.saveXML()` only when saving to persistence.
+  </Card>
+  <Card title="Repository is the only storage API" icon="shield">
+    Nothing imports `localforage` directly. Nothing imports `LocalRepository` or `SupabaseRepository` by name outside of `persistence/index.ts`.
+  </Card>
+  <Card title="No SSR, ever" icon="browser">
+    The app is a pure SPA. bpmn-js requires a real DOM — server rendering is impossible.
+  </Card>
+  <Card title="One binding point" icon="arrow-right-arrow-left">
+    Switching from local to cloud storage only requires changing one line in `/src/persistence/index.ts`. No stores, hooks, or components need to change.
+  </Card>
+</CardGroup>
+
+---
+
+## Further Reading
+
+<CardGroup cols={2}>
+  <Card title="Data Model" icon="table" href="/architecture/data-model">
+    All TypeScript domain interfaces: Diagram, Project, Folder, LibraryImage, and more.
+  </Card>
+  <Card title="Persistence Layer" icon="hard-drive" href="/architecture/persistence">
+    Repository pattern, LocalRepository, SupabaseRepository, auto-save, CAS conflict handling, and soft delete.
+  </Card>
+  <Card title="BPMN Engine" icon="gear" href="/architecture/bpmn-engine">
+    bpmn-js initialization, custom modules, and the event adapter pattern.
+  </Card>
+  <Card title="Collaboration & Sync" icon="users" href="/architecture/collab-sync">
+    Yjs CRDT integration, presence, and real-time conflict resolution.
+  </Card>
+</CardGroup>

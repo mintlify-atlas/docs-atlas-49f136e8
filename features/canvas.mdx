@@ -1,0 +1,252 @@
+---
+title: "BPMN Canvas: Navigation, Selection & Controls"
+sidebarTitle: "Canvas"
+description: "Master the MC Modeler canvas — pan, zoom, multi-select, grid snapping, undo/redo, minimap, auto-save, and the full keyboard shortcut reference."
+---
+
+The canvas is the central workspace of MC Modeler. Built on **bpmn-js v18**, it renders a fully interactive BPMN 2.0 diagram where you can drag elements, draw connections, resize containers, and model complex processes — all inside the browser with no installation required.
+
+## Layout Overview
+
+The editor is organized into four main areas that work together:
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  TOOLBAR  [Logo] [Menus] ── [Undo][Redo] [ES|EN] [☀] [Save] │
+├──────────[Diagram Tabs ×]──────────────────────────────────┤
+│  PALETTE  │                                  │  PROPERTIES   │
+│  (left)   │        C A N V A S               │   (right)     │
+│  ~215 px  │     (dot-grid background)        │   ~280 px     │
+│           │                        [minimap] │               │
+├───────────┴──────────────────────────────────┴───────────────┤
+│  STATUS BAR  [● Saved] [85%] [2 tabs] [● 1 error]  [BPMN 2.0]│
+└──────────────────────────────────────────────────────────────┘
+```
+
+<CardGroup cols={2}>
+  <Card title="Palette Panel" icon="sidebar-flip">
+    Fixed on the left (~215 px). All 35 BPMN elements organized by category. Collapsible with the **◁** button to maximize canvas space.
+  </Card>
+  <Card title="Canvas Area" icon="drafting-compass">
+    The central modeling surface powered by bpmn-js. Dot-grid background, minimap in the bottom-right corner, zoom 25 %–400 %.
+  </Card>
+  <Card title="Properties Panel" icon="sliders">
+    Fixed on the right (~280 px). Shows the editable properties of the selected element, or a "No selection" message. Collapsible.
+  </Card>
+  <Card title="Status Bar" icon="chart-bar">
+    Bottom strip showing: save state, current zoom level, number of open tabs, validation summary, and a keyboard-shortcuts link.
+  </Card>
+</CardGroup>
+
+---
+
+## Diagram Tabs
+
+MC Modeler supports multiple diagrams open simultaneously. A tab bar sits just below the toolbar and above the canvas area.
+
+- Each tab shows the diagram icon + truncated name + **×** to close.
+- The active tab has a colored accent indicator.
+- **Double-click** a tab label to rename the diagram inline.
+- Click **+** at the right end of the tab bar to open an additional diagram.
+- Up to 5–6 tabs are shown before an overflow menu appears.
+
+<Note>
+  Opening a new diagram or switching tabs clears the undo/redo history for the previously active diagram. The history is per-tab.
+</Note>
+
+---
+
+## Navigation
+
+### Panning
+
+| Action | Result |
+|--------|--------|
+| `Space` + drag | Pan the canvas |
+| Drag on empty canvas area | Pan the canvas |
+| Middle-mouse drag | Pan the canvas |
+
+### Zooming
+
+| Action | Result |
+|--------|--------|
+| Mouse wheel | Zoom in / zoom out |
+| `+` button in toolbar | Zoom in one step |
+| `−` button in toolbar | Zoom out one step |
+| Fit-to-screen button (`⤢`) | Fit all elements in view |
+| `Ctrl` + `0` | Reset zoom to 100 % |
+
+The canvas supports a zoom range of **25 % to 400 %**. The current zoom level is always visible in the status bar.
+
+---
+
+## Selection
+
+<Tabs>
+  <Tab title="Single selection">
+    Click any element on the canvas to select it. The element highlights with a blue selection ring, and its properties appear in the right panel.
+  </Tab>
+  <Tab title="Multi-select">
+    - **`Ctrl` + click** each element to add it to the selection.
+    - **Lasso drag** — click and drag on an empty canvas area to draw a selection rectangle. All elements fully or partially inside the lasso are selected.
+    - **`Ctrl` + `A`** — select all elements on the canvas.
+  </Tab>
+  <Tab title="Deselect">
+    Click on an empty area of the canvas, or press `Escape`, to deselect everything.
+  </Tab>
+</Tabs>
+
+With multiple elements selected you can:
+- Move them together by dragging any selected element.
+- Delete all with `Delete` or `Backspace`.
+- Copy with `Ctrl+C`, cut with `Ctrl+X`, paste with `Ctrl+V`.
+
+---
+
+## Moving and Resizing Elements
+
+**Moving:** Click and drag any element to reposition it. When snap-to-grid is enabled, movement snaps to the configured grid size. Smart alignment guides appear while dragging to help align with neighboring elements.
+
+**Resizing:** Pools, lanes, sub-processes, groups, and phases show resize handles on their edges. Drag any handle to resize. Tasks, events, and gateways have fixed sizes set in `ElementSizes.ts`:
+
+| Element type | Default size |
+|---|---|
+| Task / Sub-process | 90 × 60 px |
+| Gateway | 50 × 50 px |
+| Event | 36 × 36 px |
+| Pool (expanded) | 600 × 250 px |
+| Lane | 400 × 100 px |
+| Data object | 36 × 50 px |
+| Text annotation | 100 × 30 px |
+| Group / Phase | 300 × 300 px |
+
+---
+
+## Grid and Snap
+
+Grid and snap settings live in **User Preferences** (`UserPreferences.gridEnabled`, `gridSize`, `snapToGrid`).
+
+<CardGroup cols={3}>
+  <Card title="Grid sizes" icon="grid">
+    Choose 5 px, 10 px, or 20 px.
+  </Card>
+  <Card title="Visual grid" icon="eye">
+    Toggle the dot-grid background display independently of snap.
+  </Card>
+  <Card title="Snap to grid" icon="magnet">
+    Elements snap to the nearest grid point when moved or resized.
+  </Card>
+</CardGroup>
+
+---
+
+## Undo / Redo
+
+MC Modeler maintains a full action history per diagram session, supporting a **minimum of 100 undo steps**.
+
+| Shortcut | Action |
+|---|---|
+| `Ctrl` + `Z` | Undo last action |
+| `Ctrl` + `Shift` + `Z` | Redo |
+| `Ctrl` + `Y` | Redo (alternative) |
+
+Undo and redo buttons are also available in the **toolbar** (Undo2 / Redo2 icons) and in the **Edit** menu inside the menu bar. Both buttons are disabled when there is no history to traverse. The history is cleared when you create a new diagram or open an existing one.
+
+---
+
+## Canvas Toolbar
+
+The toolbar above the canvas provides quick access to the most common operations:
+
+| Button | Action |
+|---|---|
+| **Undo** | Undo last change |
+| **Redo** | Redo last undone change |
+| **Zoom in** (`+`) | Increase zoom |
+| **Zoom out** (`−`) | Decrease zoom |
+| **[85%]** | Current zoom level (click to type a custom value) |
+| **Fit to screen** (`⤢`) | Fit all content in the viewport |
+| **Validate** (`✓`) | Run BPMN validation on-demand |
+| **Save** | Immediately persist the diagram |
+
+---
+
+## Context Pad
+
+When you select an element on the canvas, a small floating **context pad** appears next to it with contextual actions:
+
+<Steps>
+  <Step title="Connect">
+    Click the arrow icon on the context pad, then click another element to create a sequence flow (or message flow if the target is in a different pool).
+  </Step>
+  <Step title="Delete">
+    Click the trash icon to delete the selected element and any flows attached to it.
+  </Step>
+  <Step title="Change type">
+    Click the wrench/morph icon to change the element to a different BPMN type within the same category (e.g., turn a plain task into a user task).
+  </Step>
+  <Step title="Image / Link">
+    On supported elements, the context pad also exposes an image-link button for attaching library images, and a comment button for adding inline comments.
+  </Step>
+</Steps>
+
+<Tip>
+  You can also right-click any element to access these actions through the browser context menu.
+</Tip>
+
+---
+
+## Minimap
+
+A minimap is displayed in the **bottom-right corner of the canvas**. It shows a scaled-down overview of the entire diagram, with a shaded rectangle indicating the current viewport position. Click or drag inside the minimap to navigate quickly to any part of a large diagram.
+
+---
+
+## Auto-Save
+
+MC Modeler saves your work automatically so you never lose progress.
+
+<AccordionGroup>
+  <Accordion title="When does auto-save trigger?">
+    - **Debounced 2 seconds** after any continuous change (typing a label, dragging an element).
+    - **Immediately** on significant actions: importing a file, creating or deleting a major element, switching diagrams.
+    - **On `Ctrl+S`** — triggers an immediate save at any time.
+  </Accordion>
+  <Accordion title="How do I know the diagram is saved?">
+    The **status bar** on the bottom left shows one of three states:
+
+    | Indicator | Meaning |
+    |---|---|
+    | 🟢 `Saved 12 s ago` | No pending changes |
+    | 🟡 `Unsaved changes` | Changes not yet persisted |
+    | ⏳ `Saving…` | Save in progress |
+  </Accordion>
+  <Accordion title="Where is the data stored?">
+    In **v1.0**, diagrams are stored entirely in the browser using `localforage` (IndexedDB with a localStorage fallback). No server is involved. Clearing your browser data will erase your diagrams — export important work as `.bpmn` files for safekeeping.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Keyboard Shortcuts Overview
+
+The most frequently used shortcuts are listed below. For the complete reference, open the **Keyboard Shortcuts** modal with `Ctrl + ?` or click the **Shortcuts ?** link in the status bar.
+
+| Shortcut | Action |
+|---|---|
+| `Ctrl` + `Z` | Undo |
+| `Ctrl` + `Shift` + `Z` | Redo |
+| `Ctrl` + `A` | Select all |
+| `Ctrl` + `C` / `X` / `V` | Copy / Cut / Paste |
+| `Delete` / `Backspace` | Delete selected elements |
+| `Ctrl` + `S` | Save immediately |
+| `Ctrl` + `0` | Reset zoom to 100 % |
+| `Space` + drag | Pan canvas |
+| `Escape` | Deselect / cancel action |
+| `Ctrl` + `?` | Open keyboard shortcuts modal |
+
+<Info>
+  On macOS, replace `Ctrl` with `Cmd` for all shortcuts above.
+</Info>
+
+For a full list including element-movement arrow keys and zoom steps, see [Keyboard Shortcuts](/configuration/keyboard-shortcuts).

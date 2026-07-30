@@ -1,0 +1,106 @@
+---
+title: "MC Modeler: Free Browser-Based BPMN 2.0 Modeling Tool"
+sidebarTitle: Introduction
+description: "Learn what MC Modeler is, who it's for, how offline and cloud modes work, and how it compares to Bizagi and Camunda Modeler."
+---
+
+MC Modeler is a free, zero-install web application for designing and documenting business processes using the **BPMN 2.0** standard. It runs entirely in any modern browser — Chrome, Firefox, Safari, or Edge — on macOS, Windows, or Linux, without requiring plugins, extensions, or a user account. Open the URL, start modeling, and your diagrams are saved automatically to your browser's local storage from the very first keystroke.
+
+## Why MC Modeler Exists
+
+Bizagi Modeler is the gold standard for BPMN tooling, but it has no native macOS client, and its web counterpart has inconsistent availability. Camunda Modeler is a capable desktop alternative but requires a local installation. MC Modeler fills the gap: full BPMN 2.0 modeling that works on every OS, costs nothing, and requires no setup.
+
+## Who It's For
+
+<CardGroup cols={2}>
+  <Card title="Business Analysts" icon="chart-bar">
+    Document as-is and to-be processes with the full BPMN 2.0 element set, then export files that open natively in Bizagi or Camunda.
+  </Card>
+  <Card title="BPM Consultants" icon="briefcase">
+    Work on client engagements from any device — a MacBook in a client office, a Windows machine at home — without installing anything.
+  </Card>
+  <Card title="Students & Academics" icon="graduation-cap">
+    Learn BPMN 2.0 with a tool that enforces the standard, validates your diagrams, and is always free.
+  </Card>
+  <Card title="Digital Transformation Teams" icon="arrows-rotate">
+    Collaborate on process maps in the cloud with real-time sync, invite-based access control, and a shared image library.
+  </Card>
+</CardGroup>
+
+## Key Differentiators
+
+<AccordionGroup>
+  <Accordion title="Zero install, every platform">
+    MC Modeler is a pure browser SPA (React 19 + Vite). There is nothing to download or update. Any browser at resolution 1280×768 or higher is supported.
+  </Accordion>
+  <Accordion title="Strict BPMN 2.0, fully interoperable">
+    The modeling engine is **bpmn-js v18**, maintained by Camunda and certified against the OMG BPMN 2.0 specification. Diagrams export using the official OMG namespace (`http://www.omg.org/spec/BPMN/20100524/MODEL`), making every `.bpmn` file openable in Bizagi Modeler and Camunda Modeler without conversion. Proprietary extensions (e.g. `bizagi:` attributes) are preserved on round-trip so no information is lost when exchanging files with Bizagi users.
+  </Accordion>
+  <Accordion title="Spanish and English from day one">
+    The entire interface — palette labels, property names, validation messages, and tooltips — is available in both **Español** and **English**. Switching languages is a single click in the toolbar; the preference is saved automatically.
+  </Accordion>
+  <Accordion title="Dark and light themes">
+    A dark theme (the default, matching the design prototype) and a clean light theme are both built in and toggle instantly.
+  </Accordion>
+  <Accordion title="Full export suite">
+    Diagrams can be exported as BPMN 2.0 XML (`.bpmn`), PNG at 1×/2×/3× resolution, scalable SVG, and PDF (A4 landscape or portrait with a header containing the diagram name).
+  </Accordion>
+</AccordionGroup>
+
+## Persistence Modes
+
+MC Modeler has two persistence modes that coexist in the same codebase. The active mode is determined solely by whether Supabase environment variables are present at build time.
+
+<Tabs>
+  <Tab title="Local mode (default)">
+    When no Supabase credentials are configured, the app stores all diagrams in the browser using **IndexedDB** (via `localforage`, with a `localStorage` fallback). This mode requires no account, no internet connection, and no server of any kind.
+
+    **What's available in local mode:**
+    - Unlimited diagrams (subject to browser storage limits — typically 50–250 MB for IndexedDB)
+    - Auto-save with a 2-second debounce
+    - Thumbnails generated from the live canvas
+    - Folder organisation, import, and the full export suite
+
+    <Warning>
+      Diagrams in local mode exist only in the browser where they were created. Clearing browser storage, switching browsers, or opening the app on a different device will not show your local diagrams. Export important work regularly as `.bpmn` files.
+    </Warning>
+  </Tab>
+  <Tab title="Cloud mode (Supabase)">
+    When `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` are set, the app connects to a Supabase project and unlocks the full collaboration stack.
+
+    **Additional capabilities in cloud mode:**
+    - Authentication (accounts, Google OAuth)
+    - Diagrams synced to a Postgres database with Row Level Security
+    - **Real-time collaboration** via Yjs CRDT — multiple editors, no conflicts
+    - Invite-based access control (owner / editor / viewer roles) at the diagram and project level
+    - In-line comments with mentions, threads, and notifications
+    - Notification inbox and digest emails
+    - Shared image library stored in the `diagram-images` Storage bucket
+    - Thumbnail storage in the private `thumbnails` Storage bucket
+
+    <Note>
+      Cloud mode is opt-in. Self-hosters and on-premise deployments configure it by providing their own Supabase project credentials. See the [Self-Hosting guide](/self-hosting) for step-by-step instructions.
+    </Note>
+  </Tab>
+</Tabs>
+
+## Feature Roadmap
+
+The project is developed in three phases:
+
+| Phase | Status | Highlights |
+|---|---|---|
+| **Phase 1 — MVP** | ✅ Complete | Full BPMN 2.0 canvas, palette, properties panel, undo/redo, local persistence, export (BPMN/PNG/SVG/PDF), validation, i18n |
+| **Phase 2 — Cloud & Auth** | ✅ Complete | Supabase backend, authentication, cloud sync, collaboration invites, comments, notifications, image library |
+| **Phase 3 — Real-time & Community** | 🔄 In progress | Yjs real-time co-editing, version history, shared diagram links, community theme system |
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Create your first BPMN 2.0 diagram in under five minutes — no sign-in required.
+  </Card>
+  <Card title="Self-Hosting" icon="server" href="/self-hosting">
+    Deploy MC Modeler with your own Supabase project to unlock cloud collaboration.
+  </Card>
+</CardGroup>

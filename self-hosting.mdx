@@ -1,0 +1,221 @@
+---
+title: "Self-Hosting MC Modeler with Supabase and Vercel"
+sidebarTitle: Self-Hosting
+description: "Deploy MC Modeler on your own infrastructure, configure a Supabase project for cloud persistence and collaboration, and serve the SPA from Vercel or any static host."
+---
+
+MC Modeler is a static SPA — the build output is a folder of HTML, CSS, and JavaScript that can be served from any web host. In local-only mode it works with no backend at all. Connecting it to your own **Supabase** project unlocks cloud persistence, authentication, real-time collaboration, comments, notifications, and the shared image library.
+
+This guide covers the complete self-hosting path: provisioning Supabase, running the database migrations, configuring environment variables, building the app, and deploying to Vercel (or any other static host).
+
+## Prerequisites
+
+- **Node.js 18 or later** (check with `node --version`)
+- **A Supabase project** — create one free at [supabase.com](https://supabase.com). You need the project URL and the `anon` public key.
+- **Vercel account** (optional) — or any static web host that can serve a single-page application (Netlify, Cloudflare Pages, an S3 + CloudFront distribution, etc.)
+- The MC Modeler source code cloned locally
+
+## Environment Variables
+
+MC Modeler reads two environment variables at build time. These are the **exact** variable names used in `src/lib/supabase.ts`:
+
+| Variable | Description |
+|---|---|
+| `VITE_SUPABASE_URL` | Your Supabase project URL, e.g. `https://xyzcompany.supabase.co` |
+| `VITE_SUPABASE_ANON_KEY` | Your Supabase project's `anon` / public API key |
+
+When both variables are present, `isSupabaseConfigured` becomes `true` and the Supabase client is initialised with `persistSession`, `autoRefreshToken`, and `detectSessionInUrl` all enabled. When either variable is absent or empty, the client is `null` and the app operates in local-only mode using IndexedDB.
+
+<CodeGroup>
+```bash Vercel CLI
+# Set variables on the Vercel project (run once, before deploying)
+vercel env add VITE_SUPABASE_URL production
+vercel env add VITE_SUPABASE_ANON_KEY production
+
+# To add to preview and development environments as well:
+vercel env add VITE_SUPABASE_URL preview
+vercel env add VITE_SUPABASE_URL development
+vercel env add VITE_SUPABASE_ANON_KEY preview
+vercel env add VITE_SUPABASE_ANON_KEY development
+```
+
+```ini .env file (local dev / other hosts)
+# .env  (copy to .env.local to keep out of version control)
+VITE_SUPABASE_URL=https://your-project-ref.supabase.co
+VITE_SUPABASE_ANON_KEY=your-anon-public-key-here
+```
+</CodeGroup>
+
+<Warning>
+  Never commit real Supabase credentials to version control. Add `.env` and `.env.local` to your `.gitignore`. The `anon` key is safe to expose to browsers (it is the public key), but your `service_role` key must never appear in the client bundle.
+</Warning>
+
+## Running the Supabase Migrations
+
+MC Modeler includes 18 incremental SQL migrations in `supabase/migrations/`. They must be applied **in order** to a fresh Supabase project. Each migration is idempotent (`create … if not exists`, `on conflict do nothing`) so re-running a migration does not break anything.
+
+### Apply via Supabase CLI (recommended)
+
+```bash
+# Link the CLI to your remote project (one-time setup)
+npx supabase link --project-ref your-project-ref
+
+# Push all local migrations to the remote database
+npx supabase db push
+```
+
+### Apply manually via the SQL editor
+
+If you prefer the Supabase dashboard, open **SQL Editor** in your project and run each file in order:
+
+| # | File | What it creates |
+|---|---|---|
+| 1 | `0001_init.sql` | Core tables: `profiles`, `folders`, `diagrams`, `diagram_collaborators`, `diagram_invites`, `yjs_documents`; RLS policies; triggers; `thumbnails` storage bucket |
+| 2 | `0002_harden_functions.sql` | Security hardening for trigger functions |
+| 3 | `0003_move_helpers_to_private_schema.sql` | Moves RLS helper functions to `private` schema |
+| 4 | `0004_redeem_invite_rpc.sql` | `redeem_invite` RPC for accepting diagram invitations |
+| 5 | `0005_yjs_state_as_text.sql` | Changes Yjs document state column type |
+| 6 | `0006_add_subprocess_columns.sql` | Adds subprocess metadata columns to `diagrams` |
+| 7 | `0007_projects_collaboration.sql` | `projects` and `project_collaborators` tables; project-level access inheritance for diagrams |
+| 8 | `0008_comment_delete_policies.sql` | Delete policies for comments |
+| 9 | `0009_notifications.sql` | Notifications system tables and triggers |
+| 10 | `0010_collaborator_visibility.sql` | Policies for collaborator profile visibility |
+| 11 | `0011_mention_thread_deeplink.sql` | Deep-link support for comment mentions and threads |
+| 12 | `0012_notification_inbox.sql` | In-app notification inbox table |
+| 13 | `0013_notification_prefs.sql` | Per-user notification preferences |
+| 14 | `0014_notification_digest.sql` | Digest email scheduling support |
+| 15 | `0015_readonly_comment_access.sql` | Read-only comment access for viewer-role collaborators |
+| 16 | `0016_image_library.sql` | `image_folders` and `images` tables; `diagram-images` storage bucket; image library RLS policies |
+| 17 | `0017_image_library_realtime.sql` | Realtime publication for image library tables |
+| 18 | `0018_drop_yjs_tables.sql` | Removes legacy Yjs tables superseded by the current CRDT implementation |
+
+## Storage Bucket Setup
+
+Two private Storage buckets are created automatically by the migrations. No manual configuration is needed if you use the Supabase CLI. If you applied migrations manually via the SQL editor, verify that both buckets exist in your project's **Storage** section:
+
+| Bucket | Created by | Purpose |
+|---|---|---|
+| `thumbnails` | `0001_init.sql` | Auto-generated PNG previews of diagrams. Path convention: `<diagram_id>/thumb.png` |
+| `diagram-images` | `0016_image_library.sql` | Images uploaded through the in-app image library. Path convention: `<scopeId>/imglib/<uuid>.<ext>` |
+
+Both buckets are **private** (`public = false`). Access is controlled by Row Level Security policies defined in the migrations — users can only read or write objects they have permission to access via the diagram or project access model.
+
+<Note>
+  If you need to create the buckets manually, set them to **private** (not public). The RLS policies in the migrations will not work correctly on a public bucket.
+</Note>
+
+## Build the Application
+
+With your environment variables in place, build the production bundle:
+
+```bash
+# Install dependencies
+npm install
+
+# Type-check and build
+npm run build
+```
+
+The build output is written to the `dist/` directory. It contains a single `index.html` entry point plus hashed JS and CSS chunks. The Vite config splits the bundle into two named chunks to reduce initial load time:
+
+- `bpmn-js` — the BPMN modeling engine
+- `react-vendor` — React and React DOM
+
+## Deploy to Vercel
+
+The repository includes a `vercel.json` that configures the build command, output directory, and the SPA catch-all rewrite rule:
+
+```json
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "framework": "vite",
+  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }]
+}
+```
+
+The `rewrites` rule is critical — it ensures that direct navigation to any route (e.g. `/diagram/abc123`) returns `index.html` instead of a 404, which is required for any client-side router.
+
+```bash
+# Deploy to Vercel (environment variables must already be set)
+vercel --prod
+```
+
+## Deploy to Other Static Hosts
+
+If you use a host other than Vercel, you must configure an equivalent catch-all rewrite to `index.html`. Examples:
+
+<Tabs>
+  <Tab title="Netlify">
+    Create a `public/_redirects` file or add to `netlify.toml`:
+
+    ```toml
+    [[redirects]]
+      from = "/*"
+      to = "/index.html"
+      status = 200
+    ```
+  </Tab>
+  <Tab title="Cloudflare Pages">
+    Create a `_redirects` file in the `dist/` folder (or project root before build):
+
+    ```
+    /* /index.html 200
+    ```
+  </Tab>
+  <Tab title="Nginx">
+    Add a `try_files` directive to your server block:
+
+    ```nginx
+    location / {
+      root /var/www/mc-modeler/dist;
+      try_files $uri $uri/ /index.html;
+    }
+    ```
+  </Tab>
+  <Tab title="Apache">
+    Add a `.htaccess` file in the `dist/` directory:
+
+    ```apache
+    Options -MultiViews
+    RewriteEngine On
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteRule ^ index.html [QSA,L]
+    ```
+  </Tab>
+</Tabs>
+
+## Local-Only Mode (No Supabase)
+
+If you want to self-host MC Modeler purely as a local diagramming tool without any cloud backend, simply **do not set** `VITE_SUPABASE_URL` or `VITE_SUPABASE_ANON_KEY`. The app detects their absence at runtime:
+
+```ts
+// src/lib/supabase.ts
+export const isSupabaseConfigured = Boolean(url && anonKey)
+
+export const supabase: SupabaseClient | null = isSupabaseConfigured
+  ? createClient(url as string, anonKey as string, { ... })
+  : null
+```
+
+When `supabase` is `null`, the app falls back to `localforage` (IndexedDB) for all persistence. No network requests are made. The build and deploy steps are identical — just skip the Supabase project setup.
+
+<Note>
+  Local-only mode still provides the full modeling experience: canvas, palette, properties panel, undo/redo, auto-save, thumbnails, and all export formats. What it does not include is user authentication, cloud sync, real-time collaboration, comments, notifications, and the image library. Those features all require a configured Supabase project.
+</Note>
+
+<Warning>
+  In local-only mode, all diagram data lives in the browser's IndexedDB. **Clearing browser storage, switching browsers, or uninstalling the browser permanently deletes all diagrams.** Export any important diagrams as `.bpmn` files regularly, and inform users of this limitation if you are deploying for a team.
+</Warning>
+
+## Enabling Supabase Auth Providers (Optional)
+
+MC Modeler uses Supabase Auth for user accounts. By default, email/password sign-up is enabled. To add social providers (Google, GitHub, etc.):
+
+1. Open your Supabase project dashboard → **Authentication** → **Providers**.
+2. Enable the desired provider and supply the OAuth credentials from that provider's developer console.
+3. Add your MC Modeler deployment URL to the provider's list of authorised redirect URIs.
+4. Add your deployment URL to **Authentication** → **URL Configuration** → **Redirect URLs** in Supabase.
+
+No code changes are required — the Supabase client is initialised with `detectSessionInUrl: true`, which handles OAuth callback URL parsing automatically.

@@ -1,0 +1,190 @@
+---
+title: "Sharing & Access Control in MC Modeler Diagrams"
+sidebarTitle: "Sharing"
+description: "Invite collaborators by email or shareable link, assign editor/viewer roles, and manage project-level access in MC Modeler."
+---
+
+Every diagram in MC Modeler is private by default. The **Share** modal lets the owner invite specific people by email or generate a shareable invite link — each with a configurable expiry and role. Roles are enforced end-to-end by Supabase Row Level Security, so a viewer genuinely cannot modify diagram data even by calling the API directly.
+
+<Note>
+  Only the **owner** of a diagram (or project) can manage access. Editors and viewers see the current list of collaborators but cannot add, change, or remove anyone — the share controls are read-only for them (`share.onlyOwnerCanShare`).
+</Note>
+
+## Roles and permissions
+
+| Role | Edit diagram | Manage access | Delete diagram | Add comments |
+|---|---|---|---|---|
+| **owner** | ✅ | ✅ | ✅ | ✅ |
+| **editor** | ✅ | ❌ | ❌ | ✅ |
+| **viewer** | ❌ | ❌ | ❌ | ✅ |
+
+Viewers open diagrams in **read-only mode**. A `ReadOnlyModule` is registered with bpmn-js that disables all modeling interactions — elements cannot be moved, created, or deleted. The viewer can still pan, zoom, and read all comments.
+
+## Inviting by email
+
+1. Open the diagram and click **Share** in the toolbar.
+2. Enter the collaborator's email address in the **email@example.com** field.
+3. Choose **Can edit** (`roleEditor`) or **View only** (`roleViewer`).
+4. Click **Invite**.
+
+Internally, `addCollaboratorByEmail` looks up the email in the `profiles` table (case-insensitive) and upserts a row into `diagram_collaborators`:
+
+```ts
+// src/lib/sharing.ts
+export async function addCollaboratorByEmail(
+  diagramId: string,
+  email: string,
+  role: Exclude<CollaboratorRole, 'owner'>
+): Promise<boolean> {
+  const { data: profile } = await client
+    .from('profiles')
+    .select('id')
+    .ilike('email', email.trim())
+    .maybeSingle()
+  if (!profile) return false          // user has no account yet
+  await client.from('diagram_collaborators').upsert(
+    { diagram_id: diagramId, user_id: profile.id, role, invited_by: u.user?.id },
+    { onConflict: 'diagram_id,user_id' }
+  )
+  return true
+}
+```
+
+If no account exists for that email, the response is `share.notRegistered` — use a shareable link instead.
+
+## Shareable invite links
+
+For collaborators who don't have an account yet, generate a link with **Copy invite link**. The link contains a UUID token and looks like:
+
+```
+https://your-app.example.com/?invite=<token>
+```
+
+### Expiry options
+
+When creating the link you choose one of four expiry windows (`share.expiryLabel`):
+
+| UI label | Days | `expiresInDays` |
+|---|---|---|
+| Expires in 3 days | 3 | `3` |
+| Expires in 7 days | 7 | `7` |
+| Expires in 30 days | 30 | `30` |
+| Never expires | — | `null` |
+
+```ts
+// src/lib/sharing.ts
+export async function createInviteLink(
+  diagramId: string,
+  role: Exclude<CollaboratorRole, 'owner'>,
+  expiresInDays: number | null = null
+): Promise<string> {
+  const token = crypto.randomUUID()
+  await client.from('diagram_invites').insert({
+    diagram_id: diagramId,
+    role,
+    token,
+    created_by: u.user?.id,
+    expires_at: expiresInDays
+      ? new Date(Date.now() + expiresInDays * 86_400_000).toISOString()
+      : null,
+  })
+  return `${window.location.origin}/?invite=${token}`
+}
+```
+
+### Redeeming an invite link
+
+When a user opens a link containing `?invite=<token>`, the app calls the `redeem_invite` Supabase RPC function. The function:
+
+1. Validates the token exists and has not expired.
+2. Inserts the authenticated user into `diagram_collaborators` with the role stored on the invite.
+3. Sets `accepted_at` on the invite row.
+4. Enqueues `invite_redeemed_diagram` notifications for existing collaborators.
+
+```ts
+// src/lib/sharing.ts
+export async function redeemInvite(token: string): Promise<string> {
+  const { data, error } = await supabase.rpc('redeem_invite', { invite_token: token })
+  if (error) throw error
+  return data as string   // returns the diagram_id
+}
+```
+
+If the token has expired, the RPC raises an exception and the UI shows `share.inviteExpired`.
+
+## Project-level sharing
+
+<Tip>
+  Share a **project** instead of individual diagrams to grant access to every diagram in the project at once — ideal for teams that work within a single project.
+</Tip>
+
+Opening **Share project** from the project menu works identically to diagram sharing but operates on `project_collaborators` and `project_invites`. Granting a role at the project level gives the collaborator the same role on all diagrams currently in the project, as well as any diagrams added later.
+
+```ts
+// src/lib/sharing.ts
+export async function addProjectCollaboratorByEmail(
+  projectId: string,
+  email: string,
+  role: Exclude<CollaboratorRole, 'owner'>
+): Promise<boolean>
+
+export async function createProjectInviteLink(
+  projectId: string,
+  role: Exclude<CollaboratorRole, 'owner'>,
+  expiresInDays: number | null
+): Promise<string>
+```
+
+Project invite links use a separate query parameter: `?projectInvite=<token>`.
+
+## Effective role resolution
+
+A user may have both a direct diagram role and an inherited project role. The **most permissive role wins**:
+
+```
+effective = max(directDiagramRole, inheritedProjectRole)
+```
+
+The rank order is `viewer (1) < editor (2) < owner (3)`. For example, a user who is a `viewer` on a diagram but an `editor` on its project has an effective role of `editor` for that diagram.
+
+This logic lives in `useCollabStore` (`src/store/collabStore.ts`) and is evaluated client-side after both role maps are loaded from Supabase.
+
+## Revoking access
+
+To remove a collaborator, open the **Share** modal and click **Remove** next to their name. This calls `removeCollaborator`, which deletes the row from `diagram_collaborators`:
+
+```ts
+// src/lib/sharing.ts
+export async function removeCollaborator(
+  diagramId: string,
+  userId: string
+): Promise<void> {
+  await supabase
+    .from('diagram_collaborators')
+    .delete()
+    .eq('diagram_id', diagramId)
+    .eq('user_id', userId)
+}
+```
+
+The removed user loses access immediately on their next Supabase query. Their active session will continue until they reload.
+
+## Share modal UI reference
+
+The following strings from `en.json` map to Share modal elements:
+
+| Key | Text |
+|---|---|
+| `share.title` | Share diagram |
+| `share.subtitle` | Invite people to view or edit this diagram |
+| `share.emailPlaceholder` | email@example.com |
+| `share.roleEditor` | Can edit |
+| `share.roleViewer` | View only |
+| `share.invite` | Invite |
+| `share.copyLink` | Copy invite link |
+| `share.expiryLabel` | Link expiration |
+| `share.expiry3d` | Expires in 3 days |
+| `share.expiry7d` | Expires in 7 days |
+| `share.expiry30d` | Expires in 30 days |
+| `share.expiryNever` | Never expires |
+| `share.onlyOwnerCanShare` | Only the owner can manage access. |

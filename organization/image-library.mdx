@@ -1,0 +1,183 @@
+---
+title: "Image Library: Uploading and Linking Images to Diagrams"
+sidebarTitle: "Image Library"
+description: "Manage the MC Modeler image library: upload, organise into folders, link images to BPMN elements, and understand cloud storage versus local IndexedDB modes."
+---
+
+The image library is a first-class catalog of images that lives **alongside** your diagrams, not inside them. Instead of embedding image bytes directly in BPMN XML, each image is stored once and referenced by its ID via the `flujo:linkedImages` attribute on BPMN elements. This keeps diagram files small, prevents duplication, and lets images be shared across multiple elements or diagrams within the same project.
+
+<Note>
+  Images are versioned and stored independently of diagram XML. Deleting or trashing a diagram **does not** delete its linked images. The images remain in the library and can be reattached to other elements or new diagrams at any time.
+</Note>
+
+## The LibraryImage interface
+
+```typescript
+interface LibraryImage {
+  id: string            // UUID, generated on upload
+  name: string          // User-visible display name (filename without extension by default)
+  projectId: string | null  // Owning project, or null for loose images
+  folderId: string | null   // Optional folder within the project
+  mime: string          // e.g. "image/webp", "image/png"
+  size: number          // File size in bytes after compression
+  ref: string           // Storage reference — see ref field section below
+  createdAt: string     // ISO 8601 upload timestamp
+  updatedAt: string     // Updated by DB trigger on rename/move
+}
+```
+
+## The ImageFolder interface
+
+```typescript
+interface ImageFolder {
+  id: string            // UUID
+  name: string          // Folder display name
+  projectId: string | null  // Scope — must match the images it contains
+  createdAt: string
+}
+```
+
+Folders are scoped to a project (or to loose images if `projectId` is `null`). A folder cannot contain images from a different project.
+
+## The `ref` field
+
+The `ref` field on a `LibraryImage` is a lightweight pointer that resolves image bytes on demand:
+
+| Mode | `ref` format | Storage backend |
+|------|-------------|-----------------|
+| Cloud (Supabase) | `storage://diagram-images/<scopeId>/imglib/<uuid>.<ext>` | Supabase Storage bucket `diagram-images` |
+| Local | `local://<id>` | Browser IndexedDB via `LocalImageRepository` |
+
+In cloud mode, the storage path follows the convention `<scopeId>/imglib/<uuid>.<ext>` where `scopeId` is the `project_id` (or `owner_id` for loose images). The `imglib` segment distinguishes library images from diagram-embedded image assets that share the same bucket.
+
+The `ImageThumb` component resolves bytes on demand through `imageStore.resolve(id)`, which checks an in-memory cache first (`resolved` map), then fetches from the appropriate backend. The result is cached so each image is fetched at most once per session.
+
+## Uploading images
+
+Open the image library via the **Images** button in the main toolbar or top action bar. Click **Upload** (or drag and drop files onto the gallery grid) to open a file picker that accepts any `image/*` MIME type.
+
+Before persisting, each file passes through `fileToCompressedDataUrl` (`src/utils/imageCompress.ts`), which re-encodes the image to reduce storage footprint. The compressed data URL is then passed to `imageStore.upload()`:
+
+```typescript
+upload: async ({ dataUrl, name, projectId, folderId }) => {
+  const image = await imageRepository.upload({ dataUrl, name, projectId, folderId })
+  set((s) => {
+    s.images.unshift(image)
+    s.resolved[image.id] = dataUrl  // cache bytes immediately — no re-download needed
+  })
+  return image
+}
+```
+
+Multiple files can be uploaded in a single operation; they are processed sequentially.
+
+<Tip>
+  Create folders before uploading a large batch of images so you can assign each file directly to its folder during upload via the active folder selection in the sidebar.
+</Tip>
+
+## Organising images into folders
+
+The gallery sidebar lists all folders in scope. Click **New folder**, enter a name, and confirm. Duplicate names within the same scope are rejected client-side before hitting the database.
+
+To move an image to a different folder, use the **folder dropdown** that appears on the image card when hovering in management mode. This calls `imageStore.move(id, folderId)`, which issues a targeted update to the `folder_id` column.
+
+To delete a folder, click the trash icon next to its name in the sidebar. The folder record is removed and any images previously assigned to it have their `folderId` cleared to `null` — the images remain in the library, now in the "All" view.
+
+```typescript
+deleteFolder: async (id) => {
+  await imageRepository.deleteFolder(id)
+  set((s) => {
+    s.folders = s.folders.filter((f) => f.id !== id)
+    s.images.forEach((i) => { if (i.folderId === id) i.folderId = null })
+  })
+}
+```
+
+## Linking images to BPMN elements
+
+Images are linked to diagram elements through the **ImageContextPad** — right-click any BPMN element to open the context menu, then select **Link image**. This opens the image library in picker mode (`onPick` prop), where clicking an image calls the attach handler, writing the image ID into the `flujo:linkedImages` attribute of the element in the diagram XML.
+
+An **image badge** (rendered by `ImageBadgeModule`) appears on elements that have one or more linked images, showing the count. The badge is part of the bpmn-js overlay system and does not affect diagram export.
+
+To detach an image, right-click the element and select **Remove link** from the ImageContextPad.
+
+## The ImageGallery component
+
+The `ImageGallery` component is a full-screen modal that provides the complete library management experience:
+
+- **Sidebar**: folder list for the current project scope, with New folder and delete actions.
+- **Search**: filters images by name within the active folder.
+- **Grid**: `ImageThumb` cards that lazy-resolve image bytes. Each card shows rename, move-to-folder, and delete actions.
+- **Drag & drop**: files dragged onto the grid are uploaded immediately.
+- **Picker mode**: when opened from a BPMN element context action, clicking a card calls `onPick(image)` instead of managing the image, then closes the gallery.
+
+```typescript
+interface ImageGalleryProps {
+  projectId: string | null   // Scopes the gallery to one project's images
+  onClose: () => void
+  onPick?: (image: LibraryImage) => void  // Enables picker mode
+}
+```
+
+## ImageThumb: on-demand resolution
+
+`ImageThumb` is a lightweight component that shows a placeholder until the image bytes are resolved:
+
+```typescript
+// ImageThumb.tsx — resolves bytes lazily with cache
+export function ImageThumb({ imageId, alt, className }: ImageThumbProps) {
+  const cached = useImageStore((s) => s.resolved[imageId])
+  const resolve = useImageStore((s) => s.resolve)
+  // ...resolves on mount if not cached, renders <img> once available
+}
+```
+
+Images use `object-fit: cover` with `object-position: top` so that document-style content (titles, labels) visible at the top of the image is not cropped.
+
+## Real-time sync
+
+In cloud mode, any image or folder created, renamed, or deleted by a collaborator is reflected in all open sessions automatically. This is powered by Supabase Realtime subscriptions set up in `imageStore.startRealtime()`:
+
+```typescript
+// imageStore.ts — startRealtime
+const ch = supabase.channel('image-library')
+ch.on('postgres_changes', { event: '*', schema: 'public', table: 'images' }, bump)
+ch.on('postgres_changes', { event: '*', schema: 'public', table: 'image_folders' }, bump)
+ch.subscribe()
+```
+
+Changes are **debounced by 300 ms** to coalesce rapid bursts (e.g. a batch upload) into a single `loadAll()` refresh. The `resolved` bytes cache is preserved across refreshes — already-viewed images are not re-downloaded.
+
+This behaviour was introduced in migration `0017_image_library_realtime.sql`, which enables `replica identity full` on both tables and adds them to the `supabase_realtime` publication:
+
+```sql
+alter table public.images        replica identity full;
+alter table public.image_folders replica identity full;
+
+alter publication supabase_realtime add table public.images;
+alter publication supabase_realtime add table public.image_folders;
+```
+
+## Storage and access control
+
+In cloud mode, images are stored in the private Supabase Storage bucket **`diagram-images`** (created by migration `0016_image_library.sql`). Row Level Security policies on both the `images` and `image_folders` tables, and matching Storage object policies, enforce the same access model as diagrams:
+
+- The image **owner** always has full access.
+- **Project collaborators** inherit access according to their role: `editor` and `owner` can upload, rename, move, and delete; `viewer` can only read.
+
+```sql
+-- Storage policy — read access for library images
+create policy diagram_images_lib_select on storage.objects
+  for select using (
+    bucket_id = 'diagram-images'
+    and (storage.foldername(name))[2] = 'imglib'
+    and (
+      (storage.foldername(name))[1]::uuid = auth.uid()
+      or private.can_access_project((storage.foldername(name))[1]::uuid)
+    )
+  );
+```
+
+## Local mode
+
+When Supabase is not configured, MC Modeler runs entirely in the browser. Images are stored in **IndexedDB** via `LocalImageRepository`. The `ref` field uses the `local://<id>` scheme, and bytes are retrieved directly from IndexedDB without any network request. Real-time sync is not available in local mode.

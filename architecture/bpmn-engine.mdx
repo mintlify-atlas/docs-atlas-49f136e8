@@ -1,0 +1,328 @@
+---
+title: "BPMN Engine: Custom bpmn-js Integration Guide"
+sidebarTitle: "BPMN Engine"
+description: "Deep dive into MC Modeler's bpmn-js integration, custom modules, the ModelerCache LRU system, and theme-aware SVG rendering for contributors."
+---
+
+MC Modeler wraps [bpmn-js v18](https://github.com/bpmn-io/bpmn-js) with a suite of custom modules that replace or augment its default behaviour — from orthogonal connection routing to dark-mode–aware rendering. This page explains the architecture so you can extend, debug, or replace any part of the engine without touching React state or the collaboration layer.
+
+## bpmn-js Fundamentals for Contributors
+
+Before reading about the custom modules, make sure these three concepts are clear:
+
+<AccordionGroup>
+  <Accordion title="The Didi dependency injector">
+    bpmn-js does **not** use ES module imports internally. Services like `modeling`, `elementRegistry`, and `canvas` are registered by name in a lightweight IoC container called [Didi](https://github.com/nikku/didi). A custom module is an object that declares:
+    - `__init__`: services that must be instantiated immediately.
+    - Named service entries as `['type', ConstructorFn]` (class) or `['value', x]` (singleton).
+
+    When a constructor needs another service it lists its dependencies in a static `$inject` array:
+    ```typescript
+    CanvasPage.$inject = ['canvas', 'eventBus', 'elementRegistry']
+    ```
+    The injector resolves the graph at startup — no circular dependency is allowed.
+  </Accordion>
+  <Accordion title="importXML vs recreating the instance">
+    The modeler is created **once** per diagram session. Switching to another diagram calls `modeler.importXML(newXml)` on the existing instance rather than destroying and recreating it. Destroying the instance would discard the undo/redo stack, cached SVG nodes, and all registered event listeners from custom modules.
+
+    As documented in `src/bpmn/modelerCache.ts`, the modelerCache extends this further: with the tabs-cache flag enabled, *each open diagram tab* keeps its own live modeler instance, and switching tabs uses `detach()` / `attachTo()` instead of `importXML` — reducing tab-switch time from up to 25 seconds (on 400-element diagrams) to under 16 ms.
+  </Accordion>
+  <Accordion title="useBpmnModeler — single React access point">
+    All React components must access the modeler exclusively through the `useBpmnModeler` hook (`src/hooks/useBpmnModeler.ts`). The hook:
+    - Creates or retrieves the modeler instance (cache-aware).
+    - Wires per-instance event listeners (`commandStack.changed`, `selection.changed`, `canvas.viewbox.changed`).
+    - Exposes a stable API: `importXml`, `exportXml`, `exportSvg`, `undo`, `redo`, `zoom`, `fitToScreen`, `scrollToElement`, `startCreate`, and more.
+    - Attaches a `MutationObserver` on `document.documentElement` to force-redraw all elements when `data-theme` changes.
+
+    Never call `new BpmnModeler(...)` outside this hook.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Module Configuration (`src/bpmn/config.ts`)
+
+All custom modules are declared in `MODELER_CONFIG.additionalModules`. bpmn-js merges them with its own built-in module set before constructing the injector:
+
+```typescript
+export const MODELER_CONFIG = {
+  additionalModules: [
+    TranslateModule,
+    ThemeAwareRendererModule,
+    CanvasLassoModule,
+    ScrollPanModule,
+    PoolInteriorLassoModule,
+    CustomResizeModule,
+    ResizableLabelsModule,
+    CustomSelectionModule,
+    CustomElementSizesModule,
+    CanvasPageModule,
+    BoundaryConstraintModule,
+    GroupMoveModule,
+    LassoIntersectionModule,
+    LaneDropModule,
+    ImageContextPadModule,
+    ImageLinkContextPadModule,
+    ImageBadgeModule,
+    DataObjectContextPadModule,
+    ConnectionEndpointCirclesModule,
+    ConnectionContextPadModule,
+    SubProcessInterceptorModule,
+    PhaseModule,
+    PhaseLabelEditingModule,
+    GroupConnectionRulesModule,
+    ConnectionEndpointRulesModule,
+    StickyLaneLabelsModule,
+    CommentContextPadModule,
+    ReadOnlyModule,
+    BizagiLayouter,
+    BizagiConnectionDocking,
+    BizagiSegmentHandles,
+    OrthogonalityBehavior,
+    ManualRouteBehavior,
+    NativeCopyPasteModule,
+  ],
+  keyboardMoveSelection: { moveSpeed: 5, moveSpeedAccelerated: 15 },
+  moddleExtensions: {
+    flujo: flujoModdle,   // custom XML namespace for Phase, linkedDiagram, etc.
+  },
+}
+```
+
+<Note>
+  The `NativeCopyPasteModule` is imported as a CommonJS package (`bpmn-js-native-copy-paste`). If you see `@ts-ignore` at the import site, that is intentional — bpmn-js and its companion packages ship CJS without full type declarations.
+</Note>
+
+---
+
+## Custom Modules Reference
+
+<CardGroup cols={2}>
+  <Card title="ThemeAwareRendererModule" icon="palette">
+    Custom SVG renderer. Registered at priority **1500** (above bpmn-js default 1000). Reads CSS variables at draw time so every element instantly reflects the active theme.
+  </Card>
+  <Card title="BizagiLayouter + OrthogonalityBehavior" icon="route">
+    Replace the default connection layouter. `BizagiLayouter` routes new connections; `OrthogonalityBehavior` repairs existing waypoints after moves so they stay axis-aligned.
+  </Card>
+  <Card title="PhaseModule" icon="columns">
+    Custom Phase element (stored as `bpmn:Group` with a `Phase_*` id prefix). Tiles phases as contiguous columns inside a pool, handles resize, move, and deletion while keeping the pool boundary consistent.
+  </Card>
+  <Card title="CustomSelectionModule" icon="mouse-pointer">
+    Adds CSS type-classes to element GFX nodes (`.djs-shape--gateway`, `.djs-shape--event`, etc.) and injects a `.djs-selection-halo` rect for non-rectangular elements. Also hides side resize handles on circles and diamonds.
+  </Card>
+  <Card title="CanvasPageModule" icon="expand">
+    Bizagi-style bounded canvas: origin `(0, 0)` is fixed top-left; the canvas auto-expands right/down as elements grow beyond the current bounds. Initial size: 1920 × 1080 px, 80 px padding.
+  </Card>
+  <Card title="ReadOnlyModule" icon="lock">
+    Veto guard for viewer role. Intercepts `commandStack.canExecute`, drag start events, double-click, direct editing, and keyboard mutations at priority **3000**. Allows comments through (they bypass the command stack).
+  </Card>
+  <Card title="ResizableLabelsModule" icon="text-cursor-input">
+    Unlocks resize handles on external labels (events, gateways, connections). Patches `textRenderer.getExternalLabelBounds` to honor manual widths > 90 px. Snap-to-content: the bounding box shrinks to the wrapped text on every resize.
+  </Card>
+  <Card title="TranslateModule" icon="language">
+    Replaces bpmn-js's built-in `translate` service. Reads the active locale from `preferencesStore` at call time and applies Spanish translations for internal bpmn-js strings (import errors, unknown element warnings, etc.).
+  </Card>
+</CardGroup>
+
+### Connection Routing Stack
+
+The routing stack is split across four modules that each own a distinct responsibility:
+
+<Steps>
+  <Step title="BizagiDirectionalRouter (pure geometry class)">
+    Strict port of Bizagi's `DirectionalRouter`. Calculates an orthogonal waypoint list from source dock point → target dock point, respecting obstacle shapes. Core method:
+    ```typescript
+    calculateRoute(
+      start, end,
+      startDir, endDir,
+      obstacles,
+      existingWaypoints?,  // if ≥ 3 waypoints, try to preserve the route
+      prevStartDir?, prevEndDir?,
+      srcObstacle?, tgtObstacle?
+    ): Point[]
+    ```
+    Internally runs four passes: `buildInitialSolution` → `verifySolutionPoints` → `verifySolutionLines` → `refineSolution`.
+  </Step>
+  <Step title="BizagiLayouter (bpmn-js module)">
+    Registered as the `layouter` service. Called by bpmn-js automatically during drag and after command execution. Delegates to `BizagiDirectionalRouter` to compute waypoints, then writes them back via `modeling.updateWaypoints`.
+  </Step>
+  <Step title="OrthogonalityBehavior (bpmn-js module)">
+    Intercepts `connection.updateWaypoints` and `shape.move` post-execute events. Calls `snapOrthogonal()` (from `orthogonal.ts`) to eliminate sub-pixel diagonal residuals without reforming the route. Guarantees `isExactOrthogonal(waypoints) === true` before the command settles.
+  </Step>
+  <Step title="ManualRouteBehavior (bpmn-js module)">
+    Marks a connection `flujo:manualRoute = true` when a user drags a segment. The layouter checks this flag and preserves the existing waypoints instead of re-routing, so manual routes survive element moves.
+  </Step>
+</Steps>
+
+### Orthogonal Geometry Primitives (`src/bpmn/connections/orthogonal.ts`)
+
+These are pure functions with no bpmn-js dependency — fully unit-testable:
+
+| Function | Purpose |
+|---|---|
+| `isOrthogonal(wps)` | Returns `true` if all segments are axis-aligned (tolerance 1 px) |
+| `isExactOrthogonal(wps)` | Requires integer coordinates and 0 px diagonal — the strict guarantee |
+| `snapOrthogonal(wps)` | Rounds to integers and collapses the minor axis on each segment |
+| `repairChainFromStart(wps, dock, face)` | Re-anchors the first waypoint maintaining orthogonality; inserts a bend if needed |
+| `repairChainFromEnd(wps, dock, face)` | Symmetric version for the target end |
+| `slideDock(shape, adjacent)` | Sliding port: preserves the along-edge position of the adjacent waypoint |
+| `gatewayVertexDock(gw, adjacent, currentFace?)` | Cardinal vertex of a diamond with hysteresis to avoid flip during drag |
+| `routeInvades(wps, shape)` | `true` if any waypoint or segment enters the interior of `shape` |
+
+---
+
+## ModelerCache (`src/bpmn/modelerCache.ts`)
+
+The cache maps `diagramId → ModelerEntry` and implements LRU eviction at a configurable cap (default **6** live instances).
+
+```typescript
+export interface ModelerEntry {
+  modeler: AnyModeler   // live bpmn-js instance
+  imported: boolean     // true once importXML has completed for this id
+  lastUsed: number      // monotonic counter (safe for SSR/tests)
+}
+```
+
+### Key operations
+
+| Function | Description |
+|---|---|
+| `getOrCreate(diagramId, maxLive?)` | Returns `{ entry, isNew }`. If `isNew`, the caller must wire listeners and call `importXML`. |
+| `attach(diagramId, container)` | Detaches the currently visible instance, then calls `entry.modeler.attachTo(container)`. |
+| `detachActive()` | Detaches without destroying (instance stays in cache). |
+| `dispose(diagramId)` | Calls `modeler.destroy()` and removes from cache. |
+| `disposeAll()` | Called when the user navigates away from the editor. |
+| `isTabsCacheEnabled()` | Reads `localStorage.getItem('flujo:tabsCache')`. Returns `false` if the value is `'0'` (killswitch). |
+
+<Warning>
+  The cache **only** manages lifecycle: create / attach / detach / destroy. It does **not** wire collaboration listeners or Yjs bindings. Those are wired once per new instance inside `useBpmnModeler.wireInstance()`, which is called from `importXml()` the first time `isNew === true`.
+</Warning>
+
+### LRU eviction
+
+When `getOrCreate` would exceed `maxLive`, `evictIfNeeded` iterates the cache looking for the entry with the lowest `lastUsed` counter that is **not** the currently attached instance. That entry is destroyed and removed. The currently visible diagram is never evicted.
+
+---
+
+## Theme-Aware Rendering
+
+### How ThemeAwareRenderer works
+
+`ThemeAwareRenderer` inherits from `BpmnRenderer` using prototypal inheritance (via `inherits-browser`). It overrides `drawShape` and `drawConnection`, reads CSS variables, and calls the base renderer passing colors as `attrs`:
+
+```typescript
+// Priority 1500 — runs before bpmn-js default renderer (priority 1000)
+BpmnRenderer.call(this, config, eventBus, styles, pathMap, canvas, textRenderer, 1500)
+```
+
+For each shape type, `getColorsFor(element)` returns `{ fill, stroke, labelColor }` by calling the relevant helper from `ThemeColors.ts`:
+
+```typescript
+// ThemeColors.ts — every function reads CSS variables live
+export function taskColors(): ElementColors {
+  return {
+    fill:       cssVar('--task-fill'),
+    stroke:     cssVar('--task-stroke'),
+    labelColor: cssVar('--task-text'),
+  }
+}
+
+export function startEventColors(): ElementColors {
+  return {
+    fill:   cssVar('--start-fill'),
+    stroke: cssVar('--start-stroke'),
+    labelColor: cssVar('--text'),
+  }
+}
+
+// ...endEventColors, intermediateEventColors, gatewayColors,
+//    poolColors, laneColors, connectionColors, defaultColors
+```
+
+Because `cssVar` calls `getComputedStyle` at draw time, a theme switch only needs to trigger a forced redraw — no DOM re-render, no React state update. The `MutationObserver` in `useBpmnModeler` watches `data-theme` on `<html>` and calls `applyThemeTo(modeler)`, which iterates `elementRegistry` and calls `graphicsFactory.update(...)` for every element.
+
+### Phase (Milestone) rendering
+
+Phases are detected via `isPhase(element)` (checks for `Phase_*` id prefix). The renderer draws:
+1. A filled polygon (`chevron` right, `notch` left for non-first phases) in the phase color at 10% opacity.
+2. Dashed border lines for internal dividers; solid on the pool's right edge (drawn by the pool, not the phase).
+3. A bold centered label in the 30 px header band.
+
+The `ExclusiveGateway` is rendered as a clean diamond without the `×` marker that the base renderer always draws on top.
+
+### Theme-safe SVG export
+
+For SVG/PNG/PDF export, the SVG string contains inline `fill`/`stroke` attributes set from CSS variables **at the moment of export**. To export in a different theme, remap the CSS variable values in the SVG string before serialising — no DOM re-render required.
+
+---
+
+## Element Sizes (`src/bpmn/ElementSizes.ts`)
+
+`CustomElementSizesModule` overrides `elementFactory.getDefaultSize()` with these values:
+
+```typescript
+export const ELEMENT_SIZES = {
+  task:                { width: 90,  height: 60  },
+  gateway:             { width: 50,  height: 50  },
+  event:               { width: 36,  height: 36  },
+
+  subProcessExpanded:  { width: 90,  height: 60  },
+  subProcessCollapsed: { width: 90,  height: 60  },
+
+  participantExpanded:          { width: 600, height: 250 },
+  participantExpandedVertical:  { width: 250, height: 600 },
+  participantCollapsed:         { width: 400, height: 60  },
+  participantCollapsedVertical: { width: 60,  height: 400 },
+
+  lane:           { width: 400, height: 100 },
+  dataObject:     { width: 36,  height: 50  },
+  dataStore:      { width: 50,  height: 50  },
+  textAnnotation: { width: 100, height: 30  },
+  group:          { width: 300, height: 300 },
+  phase:          { width: 200, height: 250 }, // vertical column, height = pool height
+}
+```
+
+Change these values to adjust the initial size of newly created elements. Existing diagrams are not affected.
+
+---
+
+## The Phase Element (`src/bpmn/elements/PhaseModule.ts`)
+
+Phases are a Bizagi-specific concept: vertical bands that tile the full width of a pool, similar to swimlane columns.
+
+### XML representation
+
+A Phase is stored as `bpmn:Group` with an id starting with `Phase_`. Custom moddleExtensions (`flujo:`) carry two extra attributes:
+
+| Attribute | Stored as | Purpose |
+|---|---|---|
+| Phase name | `flujo:phaseName` (+ `bo.name`) | Displayed in the 30 px header band |
+| Phase color | `flujo:phaseColor` | Fill color at 10% opacity |
+
+### Lifecycle rules enforced by PhaseModule
+
+<Steps>
+  <Step title="Create">
+    First phase: occupies the entire pool width minus the label column offset (30 px for pool label + 30 px for lane label if lanes exist). Subsequent phases: pool grows by `NEW_PHASE_WIDTH` (200 px) to the right.
+  </Step>
+  <Step title="Resize">
+    Moving an internal border redistributes width between adjacent phases (the pool width stays fixed). Moving the rightmost edge grows or shrinks the pool.
+  </Step>
+  <Step title="Pool resize">
+    Phases rescale proportionally. The last phase absorbs rounding error so the sum always equals the available width exactly.
+  </Step>
+  <Step title="Delete">
+    The pool shrinks to the sum of remaining phase widths.
+  </Step>
+  <Step title="Move out of pool">
+    Phase is reverted to its last valid snapshot position. It cannot exist outside a pool.
+  </Step>
+  <Step title="Import heal">
+    On `import.done`, `PhaseModule.healAll()` fixes phases with NaN geometry inherited from earlier versions. It also realigns lanes to the bpmn-js coordinate convention.
+  </Step>
+</Steps>
+
+<Tip>
+  The minimum width per phase is **200 px** (`MIN_WIDTH`). The pool can never be narrower than `offset + n × MIN_WIDTH` where `n` is the number of phases.
+</Tip>
