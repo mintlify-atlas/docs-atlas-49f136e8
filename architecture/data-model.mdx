@@ -1,5 +1,5 @@
 ---
-title: "MC Modeler Domain Types and Data Model Reference"
+title: "MC Modeler Data Model: TypeScript Domain Types Reference"
 sidebarTitle: "Data Model"
 description: "Complete reference for all TypeScript domain interfaces in MC Modeler: Diagram, Project, Folder, LibraryImage, and supporting types."
 ---
@@ -250,6 +250,10 @@ export interface Collaborator {
 ---
 
 ## DiagramConflictError
+
+<Note>
+  `DiagramConflictError` is defined in `/src/persistence/IDiagramRepository.ts`, not in `types.ts`. It is documented here because it is part of the public domain contract — every caller of `IDiagramRepository.save()` must handle it.
+</Note>
 
 A typed error class thrown by `IDiagramRepository.save()` when an optimistic concurrency check (CAS — Compare-And-Swap) fails. This happens in `SupabaseRepository` when `expectedUpdatedAt` is provided but the record in the database has a different `updated_at` — meaning another writer saved in between.
 

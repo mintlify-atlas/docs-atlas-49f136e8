@@ -1,7 +1,7 @@
 ---
 title: "Diagrams: Creating, Editing, and Managing BPMN Files"
 sidebarTitle: "Diagrams"
-description: "Understand the Diagram data model, auto-save with optimistic CAS, thumbnail generation, tabs, sub-process linking, and the full diagram lifecycle in MC Modeler."
+description: "Understand the Diagram data model, auto-save, optimistic CAS, thumbnail generation, tabs, sub-process diagrams, and the full lifecycle in MC Modeler."
 ---
 
 A diagram is the central entity in MC Modeler — it holds a complete BPMN 2.0 model serialised as XML, plus metadata such as a thumbnail preview, an element count, and versioning information. Diagrams live either at the top level (loose) or inside a project, and multiple diagrams can be open simultaneously in the tabbed editor.
@@ -106,7 +106,7 @@ setDiagramName(id: string, name: string): Promise<string | null>
 
 ## Duplicating a diagram
 
-Select **Duplicate** from the ⋯ menu. The store fetches the source diagram's XML if it is not already in memory, copies all Storage images to a new path under the duplicate's ID (via `rehomeImages`), then saves the copy as a new `Diagram` with a fresh UUID, `createdAt`/`updatedAt`, and a ` (copy)` name suffix. The duplicate starts with no thumbnail.
+Select **Duplicate** from the ⋯ menu. The store fetches the source diagram's XML if it is not already in memory, copies all Storage images to a new path under the duplicate's ID (via `rehomeImages`), then saves the copy as a new `Diagram` with a fresh UUID, `createdAt`/`updatedAt`, and a ` (copia)` name suffix. The duplicate starts with no thumbnail.
 
 ## Opening a diagram and tabs
 
@@ -126,7 +126,7 @@ The XML for a diagram is **not loaded** when the list populates — it is fetche
 
 ## Auto-save and the `unsavedChanges` flag
 
-The editor debounces saves with a **2-second idle timer** after each change. Significant edits (adding or removing elements) trigger an **immediate save** rather than waiting for the debounce. While unsaved changes exist, the `unsavedChanges` flag in `UIState` is `true` and the status bar shows an **Unsaved changes** indicator.
+The editor runs an **auto-save timer** (default 20 seconds) after any change that sets the `unsavedChanges` flag. A random jitter of 0–5 seconds is added to decorrelate save attempts from different collaborators editing the same diagram simultaneously, reducing CAS conflicts. While unsaved changes exist, the `unsavedChanges` flag in `UIState` is `true` and the status bar shows an **Unsaved changes** indicator.
 
 Saves are serialised through a `saveChain` promise so that concurrent auto-saves from the same client never race against each other.
 

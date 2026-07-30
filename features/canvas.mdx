@@ -1,5 +1,5 @@
 ---
-title: "BPMN Canvas: Navigation, Selection & Controls"
+title: "MC Modeler Canvas: Navigation, Selection & Controls"
 sidebarTitle: "Canvas"
 description: "Master the MC Modeler canvas — pan, zoom, multi-select, grid snapping, undo/redo, minimap, auto-save, and the full keyboard shortcut reference."
 ---
@@ -25,7 +25,7 @@ The editor is organized into four main areas that work together:
 
 <CardGroup cols={2}>
   <Card title="Palette Panel" icon="sidebar-flip">
-    Fixed on the left (~215 px). All 35 BPMN elements organized by category. Collapsible with the **◁** button to maximize canvas space.
+    Fixed on the left (~215 px). All 37 BPMN elements organized by category. Collapsible with the **◁** button to maximize canvas space.
   </Card>
   <Card title="Canvas Area" icon="drafting-compass">
     The central modeling surface powered by bpmn-js. Dot-grid background, minimap in the bottom-right corner, zoom 25 %–400 %.
@@ -118,7 +118,8 @@ With multiple elements selected you can:
 | Lane | 400 × 100 px |
 | Data object | 36 × 50 px |
 | Text annotation | 100 × 30 px |
-| Group / Phase | 300 × 300 px |
+| Group | 300 × 300 px |
+| Phase | 200 × 250 px |
 
 ---
 
@@ -208,8 +209,8 @@ MC Modeler saves your work automatically so you never lose progress.
 
 <AccordionGroup>
   <Accordion title="When does auto-save trigger?">
-    - **Debounced 2 seconds** after any continuous change (typing a label, dragging an element).
-    - **Immediately** on significant actions: importing a file, creating or deleting a major element, switching diagrams.
+    - **20-second timer** — a timer starts (with up to 5 s of random jitter to prevent write collisions in collaborative sessions) whenever unsaved changes are detected. It resets each time a new change arrives before the timer fires.
+    - **Immediately on tab switch** — when you switch away from a dirty diagram, its contents are persisted in the background before the next diagram loads.
     - **On `Ctrl+S`** — triggers an immediate save at any time.
   </Accordion>
   <Accordion title="How do I know the diagram is saved?">

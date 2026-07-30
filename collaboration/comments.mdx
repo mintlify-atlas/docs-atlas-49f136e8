@@ -1,16 +1,19 @@
 ---
-title: "Threaded Comments & Mentions in MC Modeler"
+title: "Threaded Comments & @Mentions — MC Modeler BPMN Tool"
 sidebarTitle: "Comments"
-description: "Add threaded comments to diagram elements, @mention collaborators, receive in-app and email notifications, and deep-link directly to comment threads."
+description: "Add threaded comments to BPMN diagram elements, @mention collaborators, receive in-app and email notifications, and deep-link to comment threads."
 ---
 
 MC Modeler's commenting system lets collaborators discuss specific parts of a BPMN diagram without leaving the canvas. Comments are **threaded**, **anchored to diagram elements**, and sync in real time via Supabase Realtime. Every collaborator — editor or viewer — can read and write comments; only the thread owner or the diagram owner can delete a thread.
 
 ## Starting a comment thread
 
-With the Comments panel open (`Ctrl+Shift+C` or the toolbar toggle), click any element on the canvas while comments mode is active. The **SelectionCommentTrigger** detects the click and opens the `NewThreadComposer` inline, pre-populated with the element's label as the anchor.
+There are two ways to start a new comment thread on the canvas:
 
-Type your comment and press **Ctrl+Enter** (or click **Comment**) to create the thread. The thread is attached to the element via an `Anchor` object that stores the element ID and label:
+- **Single element** — Click the element to select it; the bpmn-js context pad appears. Click the **comment bubble icon** in the context pad (`CommentContextPadModule`). This dispatches a `bpmn:comment:create` custom event that opens the `NewThreadComposer` pre-populated with the element's label as the anchor.
+- **Multi-element selection** — Select two or more elements. The **SelectionCommentTrigger** overlay appears above the selection; clicking it opens the `NewThreadComposer` with a `selection` anchor containing all selected element IDs.
+
+Type your comment and press **Ctrl+Enter** (or click **Comment**) to create the thread. The thread is attached to the element(s) via an `Anchor` object that stores the element ID and label:
 
 ```ts
 // anchor types

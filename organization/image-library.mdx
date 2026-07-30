@@ -1,7 +1,7 @@
 ---
 title: "Image Library: Uploading and Linking Images to Diagrams"
 sidebarTitle: "Image Library"
-description: "Manage the MC Modeler image library: upload, organise into folders, link images to BPMN elements, and understand cloud storage versus local IndexedDB modes."
+description: "Manage the MC Modeler image library: upload, organise into folders, link images to BPMN elements, and understand cloud storage vs. local IndexedDB modes."
 ---
 
 The image library is a first-class catalog of images that lives **alongside** your diagrams, not inside them. Instead of embedding image bytes directly in BPMN XML, each image is stored once and referenced by its ID via the `flujo:linkedImages` attribute on BPMN elements. This keeps diagram files small, prevents duplication, and lets images be shared across multiple elements or diagrams within the same project.

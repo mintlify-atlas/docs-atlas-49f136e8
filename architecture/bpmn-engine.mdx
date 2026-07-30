@@ -1,5 +1,5 @@
 ---
-title: "BPMN Engine: Custom bpmn-js Integration Guide"
+title: "BPMN Engine: bpmn-js Integration and Custom Modules"
 sidebarTitle: "BPMN Engine"
 description: "Deep dive into MC Modeler's bpmn-js integration, custom modules, the ModelerCache LRU system, and theme-aware SVG rendering for contributors."
 ---
@@ -188,10 +188,14 @@ export interface ModelerEntry {
 | Function | Description |
 |---|---|
 | `getOrCreate(diagramId, maxLive?)` | Returns `{ entry, isNew }`. If `isNew`, the caller must wire listeners and call `importXML`. |
+| `get(diagramId)` | Returns the `ModelerEntry` for `diagramId`, or `undefined` if not in cache. |
+| `has(diagramId)` | Returns `true` if a live entry exists for `diagramId`. |
+| `markImported(diagramId)` | Sets `entry.imported = true` after the first `importXML` completes. |
 | `attach(diagramId, container)` | Detaches the currently visible instance, then calls `entry.modeler.attachTo(container)`. |
 | `detachActive()` | Detaches without destroying (instance stays in cache). |
 | `dispose(diagramId)` | Calls `modeler.destroy()` and removes from cache. |
 | `disposeAll()` | Called when the user navigates away from the editor. |
+| `liveCount()` | Returns the number of live instances currently in the cache. |
 | `isTabsCacheEnabled()` | Reads `localStorage.getItem('flujo:tabsCache')`. Returns `false` if the value is `'0'` (killswitch). |
 
 <Warning>
